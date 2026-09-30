@@ -1048,8 +1048,72 @@ try {
   check("o angulo Recusado-usou o par guardado", depoisDoErro?.deg === 17,
     `deg=${depoisDoErro?.deg}`);
 
-  const limparHu = await realClick("button", "limpar todas");
-  check("cleanup: limpar todas", !limparHu.erro, limparHu.erro ?? "");
+  // --- relatorio exportavel ---
+  // No momento em que isto roda a lista tem o angulo do axial, o do coronal e
+  // o do teste de vertice: tres medidas em tres planos/cortes diferentes.
+  console.log("\n-- relatorio: o exame inteiro, nao so o corte na tela --");
+  const lerRelatorio = async () => {
+    const { result } = await cdp.send("Runtime.evaluate", {
+      expression: `(() => {
+        const pre = document.querySelector('[data-report]');
+        if (!pre) return null;
+        return {
+          texto: pre.textContent,
+          linhas: pre.textContent.split('\\n').filter(l => l.trim().length > 0),
+        };
+      })()`,
+      returnByValue: true,
+    });
+    return result.value;
+  };
+
+  const rel = await lerRelatorio();
+  check("relatorio renderizado", rel !== null);
+  check("relatorio traz o cabecalho do exame",
+    rel?.texto.startsWith("MEDICOES ODONTOVISION\nPaciente: "), JSON.stringify(rel?.texto.slice(0, 30) ?? ""));
+  check("relatorio traz exame e data",
+    /Exame: \S+/.test(rel?.texto ?? "") && /Data: \S+/.test(rel?.texto ?? ""));
+  check("relatorio traz o voxel", /Voxel: \d+\.\d+ x \d+\.\d+ x \d+\.\d+ mm/.test(rel?.texto ?? ""),
+    (rel?.texto ?? "").split("\n").find((l) => l.startsWith("Voxel:")) ?? "");
+  // As tres medidas estao em linhas da tabela, inclusive as de outros cortes.
+  const linhaDados = rel?.linhas.filter((l) => /^\d+ /.test(l.trim())) ?? [];
+  check("relatorio lista as 3 medicoes, de todos os cortes", linhaDados.length === 3,
+    `n=${linhaDados.length}`);
+  // Sao tres angulos, todos criados aqui: as distancias ficaram para tras,
+  // no bloco de testes da regua, que limpa a lista antes de comecar.
+  check("relatorio tem tres angulos e nenhuma regua",
+    linhaDados.filter((l) => l.includes("angulo")).length === 3
+      && linhaDados.every((l) => !l.includes("distancia")),
+    linhaDados.join(" || "));
+  // A tabela precisa estar alinhada: uma coluna grudada nela e o sinal de que
+  // o preenchimento quebrou, e nao aparece em nenhum outro lugar.
+  check("colunas da tabela separadas por espaco",
+    linhaDados.every((l) => !/distanciaAxial|anguloCoronal|anguloSagital|mm\d/.test(l)),
+    linhaDados.join(" || "));
+  check("relatorio mostra o total", rel?.texto.includes("Total: 3"), rel?.texto ?? "");
+
+  // O CSV nao e um atributo do DOM: o botao monta um Blob. Ler o texto do
+  // relatorio e o que da para conferir sem interceptar o download, entao o
+  // E2E garante o conteudo e o unit test garante o CSV byte a byte.
+  check("botao de baixar CSV existe",
+    (await cdp.send("Runtime.evaluate", {
+      expression: `[...document.querySelectorAll('button')].some(b => b.textContent.includes('Baixar CSV'))`,
+      returnByValue: true,
+    })).result.value === true);
+  check("botao de copiar existe",
+    (await cdp.send("Runtime.evaluate", {
+      expression: `[...document.querySelectorAll('button')].some(b => b.textContent.includes('Copiar'))`,
+      returnByValue: true,
+    })).result.value === true);
+
+  // Esvaziar a lista esvazia o relatorio tambem: as duas coisas andam juntas.
+  await realClick("button", "limpar todas");
+  const relVazio = await lerRelatorio();
+  check("relatorio vazio avisa", relVazio?.texto.includes("Nenhuma medicao registrada."),
+    relVazio?.linhas.at(-1) ?? "");
+  check("relatorio vazio conta zero", relVazio?.texto.includes("Total: 0"));
+  check("relatorio vazio ainda traz o cabecalho do exame",
+    relVazio?.texto.startsWith("MEDICOES ODONTOVISION\nPaciente: "));
   check("lista vazia no fim", (await lerMedicoes()).length === 0);
 
   check("nenhuma excecao na pagina apos a serie", pageErrors.length === 0,

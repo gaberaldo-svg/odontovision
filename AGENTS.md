@@ -37,9 +37,10 @@ Isso impõe duas regras em `lib/`:
   `[z][y][x]` e MPR axial/coronal/sagittal com crosshair sincronizado.
 - **Fase 4b**: régua de distância em mm por plano, com lista, remoção e limpeza.
 - **Fase 5a**: HU das duas pontas da régua e ΔHU com sinal.
-- **Fase 5b** (estamos aqui): ângulo de três pontos (dois cliques marcam as
-  pontas, o terceiro fecha), em graus e com o HU dos três pontos.
-  Ainda não existe anotação de texto nem exportação.
+- **Fase 5b**: ângulo de três pontos (dois cliques marcam as pontas, o terceiro
+  fecha), em graus e com o HU dos três pontos.
+- **Fase 5c** (estamos aqui): relatório das medições em texto e CSV, com
+  download e cópia. Ainda não existe anotação de texto.
 
 Só avance de fase com ordem explícita do usuário.
 
@@ -85,6 +86,23 @@ Estas custaram bug real; todas já têm teste.
 - `Measurement` é união discriminada por `kind: "distance" | "angle"`.
   Qualquer consumidor novo narrow por `kind` antes de ler `distanceMm` ou
   `angleDeg`; o E2E usa `data-measure-kind` para isso.
+- **O relatório lista o exame inteiro; a lista lateral é do corte.** São
+  filtros diferentes de propósito: trocar de corte esconde a régua para não
+  poluir a imagem, mas apagar do relatório uma medição que o clínico acabou de
+  fazer seria perder trabalho. Se um dia o relatório passar a filtrar por
+  plano/corte, ele vai contradizer a tela e o dental vai exportar menos do que
+  mediu.
+- **Toda célula do CSV vai entre aspas, inclusive as numéricas.** Entre aspas a
+  vírgula deixa de poder aparecer dentro de um valor e a vírgula decimal deixa
+  de brigar com o delimitador. Solto, um `toFixed` é a forma clássica de o
+  Excel abrir o arquivo com as colunas trocadas. Separador vírgula e decimal
+  ponto, como em `formatMm` — misturar os dois no mesmo produto seria pior.
+- **`PLANO_LABEL` mora em `lib/format.ts`, não na sidebar.** O relatório
+  precisa do mesmo rótulo da lista; dois mapas desse tipo divergem, e o
+  relatório passa a discordar da lista ao lado dele.
+- O CSV não é atributo de DOM: o botão monta um Blob. O unit test garante o
+  CSV byte a byte e o E2E garante o texto renderizado — não há como ler o
+  arquivo baixado de dentro da página, e fingir que há seria o teste-mentira.
 - **O canvas é quadrado; o que sobra é tarja.** O `aspect-square` do viewport
   resolve, e `imagemDoPlano` no `scripts/e2e-dicom.mjs` centraliza a imagem
   dentro dele. Nada de medir posição por fração da altura: converta
@@ -101,7 +119,7 @@ npm run build            # build de produção
 npm run sample           # gera a fixture de 1 corte em samples/
 npm run sample:series    # gera a série de 32 cortes + a variante multiframe
 npm run verify:sample    # valida a fixture de 1 corte (27 checks)
-npm run verify:volume    # valida HU/W-L/MPR/medicao/angulo puros (134 checks)
+npm run verify:volume    # valida HU/W-L/MPR/medicao/angulo/relatorio puros (155 checks)
 npm run verify:series    # monta a série real e confere voxel a voxel (50 checks)
 npm run e2e              # Chrome headless via CDP, porta 3210
 npm run verify           # tsc + build + sample + volume + series + e2e

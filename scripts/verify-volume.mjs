@@ -40,6 +40,7 @@ function near(label, actual, expected, tol) {
 const { huAt, huToGray, autoWindow, storedRange, sliceToImageData, voxelIndex, planeVoxelSizeMm, planeDistanceMm, planeAngleDeg } =
   await import("../lib/dicom/volume.ts");
 const { buildMeasurement, buildAngleMeasurement } = await import("../lib/dicom/measure.ts");
+const { buildReport } = await import("../lib/dicom/report.ts");
 
 // --- monta o volume a partir da fixture, como o worker faz ---
 const byteArray = new Uint8Array(readFileSync(SAMPLE));
@@ -504,6 +505,68 @@ check("ponto fracionario e recusado",
 // A regua e o angulo sao tipos distintos: o `kind` e o que separa.
 check("regua continua sendo 'distance'",
   buildMeasurement(mprVolume, "axial", 1, { u: 0, v: 1 }, { u: 3, v: 5 }, 7).measurement.kind === "distance");
+
+console.log("\n-- buildReport: o relatorio lista o exame inteiro --");
+const reportMeta = {
+  patientName: "MARIA, JOAO",
+  patientId: "CBCT-2024-0142",
+  studyDate: "2024-03-15",
+  seriesDescription: "CBCT - Maxilar Superior",
+  modality: "CT",
+  voxelSize: [0.25, 0.25, 1],
+};
+const dist = buildMeasurement(mprVolume, "axial", 1, { u: 0, v: 1 }, { u: 3, v: 5 }, 1).measurement;
+const ang = buildAngleMeasurement(mprVolume, "coronal", 0, { u: 7, v: 3 }, { u: 3, v: 1 }, { u: 1, v: 2 }, 2).measurement;
+// De proposito fora de ordem: a ordem do relatorio e axial -> coronal ->
+// sagital, e nao a ordem em que o usuario clicou.
+const rel = buildReport([ang, dist], reportMeta);
+check("contagem", rel.contagem === 2, `=${rel.contagem}`);
+
+const linhasCsv = rel.csv.trim().split("\n");
+check("CSV: cabecalho + 2 linhas", linhasCsv.length === 3, `n=${linhasCsv.length}`);
+check("CSV: cabecalho", linhasCsv[0] === '"id","tipo","plano","corte","valor","unidade","hu_a","hu_b","hu_c","delta_hu"',
+  linhasCsv[0]);
+// Regra distancia: o valor e numero cru (5,62 -> "5.62"), sem "mm" na celula.
+check("CSV: distancia com valor cru e unidade separada",
+  linhasCsv[1] === '"1","distance","axial","1","2.5","mm","110","153","","43"', linhasCsv[1]);
+// Regra angulo: hu_c preenchido e delta vazio, porque o angulo nao tem delta.
+check("CSV: angulo com hu_c e sem delta",
+  linhasCsv[2] === '"2","angle","coronal","0","53.1","deg","307","103","201",""', linhasCsv[2]);
+
+// O relatorio nao esconde o que o usuario mediu: a lista da tela e por corte,
+// o relatorio e do exame inteiro.
+const soDoCorte = buildReport([dist], reportMeta);
+check("relatorio nao filtra por corte visivel", soDoCorte.contagem === 1 && soDoCorte.csv.includes('"1","distance"'),
+  `contagem=${soDoCorte.contagem}`);
+
+// A ordenacao tem de ser estavel e independente da ordem de insercao.
+const invertido = buildReport([dist, ang], reportMeta);
+check("ordem independe da ordem de insercao", invertido.csv === rel.csv);
+
+// O texto leva o cabecalho do exame e as duas casas do mm, igual a lista.
+check("texto comeca pelo cabecalho", rel.texto.startsWith("MEDICOES ODONTOVISION\nPaciente: MARIA, JOAO\n"),
+  JSON.stringify(rel.texto.slice(0, 40)));
+check("texto traz paciente, exame e data",
+  rel.texto.includes("Paciente: MARIA, JOAO") && rel.texto.includes("Exame: CBCT-2024-0142")
+    && rel.texto.includes("Data: 2024-03-15"));
+check("texto traz o voxel formatado", rel.texto.includes("Voxel: 0.25 x 0.25 x 1.00 mm"),
+  rel.texto.split("\n").find((l) => l.startsWith("Voxel:")) ?? "");
+check("texto mostra o total", rel.texto.includes("Total: 2"));
+check("texto com o mm da regua", rel.texto.includes("2.50 mm"), rel.texto);
+check("texto com os graus do angulo", rel.texto.includes("53.1\u00B0"), rel.texto);
+check("texto traz o delta da regua", rel.texto.includes("\u0394+43 HU"), rel.texto);
+// O angulo aparece sem delta: tres pontos nao tem par unico.
+check("texto do angulo sem delta", rel.texto.includes("307 -> 103 -> 201 HU"), rel.texto);
+
+// Relatorio sem medicoes: arquivo bem formado e explicito, em vez de vazio.
+const vazio = buildReport([], reportMeta);
+check("relatorio vazio conta zero", vazio.contagem === 0);
+check("relatorio vazio avisa", vazio.texto.includes("Nenhuma medicao registrada."));
+check("CSV vazio e so o cabecalho", vazio.csv.trim().split("\n").length === 1, JSON.stringify(vazio.csv));
+check("sem metadados, tudo vira '-'", buildReport([], null).texto.includes("Paciente: -"),
+  buildReport([], null).texto.split("\n")[1]);
+check("texto e CSV terminam com quebra de linha", rel.texto.endsWith("\n") && rel.csv.endsWith("\n"));
+check("nenhuma celula de CSV quebra linha", !rel.csv.split("\n").slice(1).some((l) => l.includes("\r")));
 
 console.log(`\n${pass} passaram, ${fail} falharam`);
 process.exit(fail === 0 ? 0 : 1);

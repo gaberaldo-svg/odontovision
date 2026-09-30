@@ -1,3 +1,17 @@
+import type { Plane } from "./dicom/types";
+
+/**
+ * "sagittal" e o valor interno de `Plane`; na tela a viewport se chama
+ * "Sagital". Vive aqui, e nao na sidebar, porque o relatorio tambem precisa do
+ * mesmo rotulo: dois mapas deste tipo inevitably divergem, e o relatorio passa
+ * a discordar da lista ao lado dele.
+ */
+export const PLANO_LABEL: Record<Plane, string> = {
+  axial: "Axial",
+  coronal: "Coronal",
+  sagittal: "Sagital",
+};
+
 /**
  * Milimetros com duas casas decimais.
  *

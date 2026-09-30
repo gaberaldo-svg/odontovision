@@ -1,19 +1,14 @@
 "use client";
 
+import * as React from "react";
 import { useViewerStore } from "@/store/use-viewer-store";
-import { FileScan, Lock, X } from "lucide-react";
-import type { Plane } from "@/lib/dicom/types";
+import { Copy, Download, FileScan, Lock, X } from "lucide-react";
 import type { MeasureError } from "@/lib/dicom/measure";
-import { formatDeg, formatDeltaHu, formatMm } from "@/lib/format";
+import { buildReport } from "@/lib/dicom/report";
+import { formatDeg, formatDeltaHu, formatMm, PLANO_LABEL } from "@/lib/format";
 import { Separator } from "@/components/ui/separator";
+import { Button } from "@/components/ui/button";
 import { FileLoader } from "@/components/layout/file-loader";
-
-/** "sagittal" e o valor interno; na UI a viewport se chama "Sagital". */
-const PLANO_LABEL: Record<Plane, string> = {
-  axial: "Axial",
-  coronal: "Coronal",
-  sagittal: "Sagital",
-};
 
 const ERRO_MEDIDA: Record<MeasureError, string> = {
   "fora-do-plano": "Clique dentro da imagem para medir.",
@@ -33,6 +28,44 @@ export function Sidebar() {
     clearMeasurements,
     lastMeasureError,
   } = useViewerStore();
+
+  const [copiado, setCopiado] = React.useState(false);
+
+  const report = React.useMemo(
+    () => buildReport(measurements, metadata),
+    [measurements, metadata],
+  );
+
+  // Nome do arquivo pelo paciente e a data do exame: e o que o clinico procura
+  // na pasta de downloads depois. Sem separador "/", que vira pasta no Windows.
+  const nomeCsv =
+    `medicoes-${(metadata?.patientId ?? "exame").replace(/[^\w.-]+/g, "_")}-` +
+    `${(metadata?.studyDate ?? "sem-data").replace(/[^\w.-]+/g, "_")}.csv`;
+
+  function baixarCsv() {
+    const url = URL.createObjectURL(
+      new Blob([report.csv], { type: "text/csv;charset=utf-8" }),
+    );
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = nomeCsv;
+    a.click();
+    // Sem revogar, o Blob fica vivo na aba ate recarregar: em medico abrindo
+    // e baixando relatorio em sequencia isso vira vazamento de memoria.
+    URL.revokeObjectURL(url);
+  }
+
+  async function copiarRelatorio() {
+    try {
+      await navigator.clipboard.writeText(report.texto);
+      setCopiado(true);
+    } catch {
+      // Sem permissao de clipboard (http sem TLS, ou navegador negando): o
+      // relatorio continua visivel no <pre> e o CSV continua baixavel, entao
+      // avisar "copiado" seria mentir sobre o que aconteceu.
+      setCopiado(false);
+    }
+  }
 
   if (!isSidebarOpen) return null;
 
@@ -223,6 +256,46 @@ export function Sidebar() {
               {lastMeasureError && (
                 <p className="text-[10px] text-destructive" data-measure-error="">
                   {ERRO_MEDIDA[lastMeasureError]}
+                </p>
+              )}
+            </div>
+
+            <Separator />
+
+            {/* Relatorio: o exame inteiro, nao so o corte que esta na tela. */}
+            <div className="flex flex-col gap-2">
+              <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                Relatorio
+              </h3>
+              <pre
+                data-report=""
+                className="max-h-40 overflow-auto rounded border border-sidebar-border bg-background p-2 font-mono text-[10px] leading-tight whitespace-pre"
+              >
+                {report.texto}
+              </pre>
+              <div className="flex gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="flex-1 text-[11px]"
+                  onClick={baixarCsv}
+                >
+                  <Download className="size-3" />
+                  Baixar CSV
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="flex-1 text-[11px]"
+                  onClick={copiarRelatorio}
+                >
+                  <Copy className="size-3" />
+                  Copiar
+                </Button>
+              </div>
+              {copiado && (
+                <p className="text-[10px] text-muted-foreground" data-report-copied="">
+                  Relatorio copiado.
                 </p>
               )}
             </div>

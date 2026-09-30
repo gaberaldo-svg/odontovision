@@ -61,6 +61,14 @@ const ARQUIVOS = [
     porque: "o aviso de 'sintaxe comprimida' precisa vir de um arquivo real",
   },
   {
+    nome: "MR_small_RLE.dcm",
+    espera: "MR real em RLE Lossless: MESMA imagem de MR_small, vira volume identico",
+    porque:
+      "e o gemelo comprimido de MR_small.dcm. Decodificar os dois e comparar " +
+      "voxel a voxel e a prova de que o decoder RLE esta certo -- e o mesmo " +
+      "truque do gêmeo big endian, agora com um codec no meio",
+  },
+  {
     nome: "liver_1frame.dcm",
     espera: "OBJETO SEG de 1 bit: recusado, sem volume",
     porque: "nem todo .dcm e imagem -- segmentacao nao vira volume de HU",

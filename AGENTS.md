@@ -26,7 +26,10 @@ Isso impõe duas regras em `lib/`:
   `parse.ts` e `worker.ts`). Sem ela o Node não resolve o módulo e o script
   morre antes do primeiro check; import **de tipo** pode ficar sem extensão,
   porque é apagado na compilação;
-- nada de `enum` nem `namespace`: type-stripping não remove enum.
+- nada de `enum` nem `namespace`: type-stripping não remove enum. **Nem
+  parameter property** (`constructor(readonly x: T)`), pelo mesmo motivo: o
+  strip-only do Node não sabe o que fazer com isso e o import estoura antes do
+  primeiro check.
 
 ## Fases
 
@@ -42,10 +45,14 @@ Isso impõe duas regras em `lib/`:
 - **Fase 5c**: relatório das medições em texto e CSV, com download e cópia.
 - **Fase 5d**: anotação de texto, um rótulo livre amarrado a um ponto de um
   plano/corte, com lista, remoção e limpeza.
-- **Fase 5e** (estamos aqui): as anotações entram no relatório e no CSV, com o
-  ponto onde o rótulo está. O CSV ganhou colunas `texto`, `u` e `v`; a 5d as
-  deixava de fora, e um clínico que anota "canal mandibular" e exporta ficava
-  sem o rótulo no arquivo.
+- **Fase 5e**: as anotações entram no relatório e no CSV, com o ponto onde o
+  rótulo está. O CSV ganhou colunas `texto`, `u` e `v`; a 5d as deixava de
+  fora, e um clínico que anota "canal mandibular" e exporta ficava sem o
+  rótulo no arquivo.
+- **Fase 6** (estamos aqui): o caminho de **pixel data encapsulado**, com RLE
+  Lossless como primeiro decoder. Antes, `dicom-parser` entregava os
+  fragmentos e o app os ignorava: recusava tudo que fosse comprimido. Ainda
+  não há decoder para JPEG2000, JPEG-LS ou JPEG Baseline.
 
 Só avance de fase com ordem explícita do usuário.
 
@@ -158,6 +165,29 @@ Estas custaram bug real; todas já têm teste.
   corrompido/comprimido, deixando o detalhe no fim para quem for reportar.
 - **Nem todo `.dcm` é imagem.** Um objeto SEG de 1 bit (exemplo real:
   `liver_1frame.dcm`) recusa com `BitsAllocated 1`, e isso está certo.
+- **`0x00` no PackBits do DICOM copia UM byte literal — não é no-op.** É a
+  diferença entre o PackBits do DICOM e o original da Apple, e errar aqui
+  produz uma imagem que parece razoável e está **deslocada a partir do
+  primeiro `0x00`**: no `MR_small_RLE.dcm` real, tratar `0x00` como no-op dava
+  3646 bytes em vez de 4096, e os primeiros pixels ainda batiam, então nada
+  denunciava. Achado comparando o RLE com o gêmeo não comprimido.
+- **Cada segmento RLE é limitado pelo offset do PRÓXIMO**, não pelo fim do
+  frame. Sem isso o fim de um segmento invade o seguinte e a imagem sai
+  deslocada. E a **saída do PackBits é limitada ao tamanho esperado**: bytes de
+  sobra de um segmento não podem vazar para o pixel seguinte.
+- **O `dataOffset` dos fragmentos do dicom-parser é relativo ao início do
+  ELEMENTO, não do arquivo.** `extraiFragmentos` por isso lê os item tags
+  `(FFFE,E000)` na própria fonte, em vez de confiar em `fragments`/
+  `basicOffsetTable`. Um offset errado aqui é a mesma classe de bug do big
+  endian: pixels plausíveis e errados.
+- **O primeiro item encapsulado é a Basic Offset Table, e não é pixel.** Sempre,
+  por definição da PS3.5. `extraiFragmentos` descarta o primeiro; um frame RLE
+  tem no mínimo 64 bytes de cabeçalho, então um item de 4 bytes no lugar de um
+  frame dá `header-curto` em vez de pixels errados.
+- O verificador fabrica o gêmeo RLE da própria fixture, com um **encoder**
+  PackBits escrito no teste — e ele usa runs de repetição de propósito, porque
+  um encoder só de literais deixaria o caminho principal do decoder sem
+  cobertura. Nenhum `verify` depende de download.
 - `Sagital` é o nome da viewport; `"sagittal"` é o valor interno de `Plane`.
 
 ## Comandos
@@ -168,7 +198,7 @@ npm run build            # build de produção
 npm run sample           # gera a fixture de 1 corte em samples/
 npm run sample:series    # gera a série de 32 cortes + a variante multiframe
 npm run fetch:real       # baixa DICOMs REAIS de teste em samples/real/ (ver abaixo)
-npm run verify:sample    # valida a fixture de 1 corte (38 checks)
+npm run verify:sample    # valida a fixture de 1 corte (59 checks)
 npm run verify:volume    # valida HU/W-L/MPR/medicao/angulo/relatorio/anotacao puros (194 checks)
 npm run verify:series    # monta a série real e confere voxel a voxel (50 checks)
 npm run e2e              # Chrome headless via CDP, porta 3210
@@ -188,11 +218,11 @@ publicamente desidentificados, **nunca exames de paciente**. O `README.md`
 gerado junto lista, para cada arquivo, o que ele comprova.
 
 São eles que cobrem o que as fixtures synthéticas não alcançam: anatomia de
-verdade, Explicit VR Big Endian, Deflate, JPEG 2000 e um objeto SEG (que não
-vira volume). Dois bugs só apareceram com eles — o big endian lido ao
-contra e a mensagem minificada da biblioteca. Nada de `verify` depende do
-download: o `verify:sample` **fabrica** o gêmeo big endian da própria fixture,
-então a cobertura roda em qualquer máquina, offline.
+verdade, Explicit VR Big Endian, RLE Lossless, Deflate, JPEG 2000 e um objeto
+SEG (que não vira volume). Dois bugs só apareceram com eles — o big endian
+lido ao contrário e a mensagem minificada da biblioteca. Nada de `verify`
+depende do download: o `verify:sample` **fabrica** o gêmeo big endian e o gêmeo
+RLE da própria fixture, então a cobertura roda em qualquer máquina, offline.
 
 ## Ignorar sempre
 

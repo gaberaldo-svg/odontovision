@@ -11,6 +11,7 @@ import type {
   DicomVolume,
 } from "./types";
 import { assembleSeries, singleFileSliceSpacing, type SliceInput } from "./series.ts";
+import { decodificaRleVolume, extraiFragmentos } from "./rle.ts";
 
 /** Tags que o OdontoVision precisa para reconstruir o volume. */
 const TAGS = {
@@ -42,7 +43,17 @@ const TAGS = {
   windowWidth: "x00281051",
 } as const;
 
-/** Transfer syntaxes que exigem um decoder antes de virar volume. */
+/**
+ * Transfer syntaxes para as que existe decoder. Tudo que NAO esta aqui e
+ * recusado com "sintaxe comprimida" -- a lista e o que o app sabe abrir, e
+ *vae alem do que ele sabe decodificar, entao um codec ausente vira recusa
+ * limpa em vez de pixels errados.
+ */
+const DECODABLE_SYNTAXES = new Set([
+  "1.2.840.10008.1.2.5", // RLE Lossless
+]);
+
+/** Comprimidas que ainda nao tem decoder aqui. */
 const COMPRESSED_SYNTAXES = new Set([
   "1.2.840.10008.1.2.4.50", // JPEG Baseline
   "1.2.840.10008.1.2.4.51", // JPEG Extended
@@ -52,8 +63,9 @@ const COMPRESSED_SYNTAXES = new Set([
   "1.2.840.10008.1.2.4.81", // JPEG-LS Lossy
   "1.2.840.10008.1.2.4.90", // JPEG 2000 Lossless
   "1.2.840.10008.1.2.4.91", // JPEG 2000
-  "1.2.840.10008.1.2.5", // RLE Lossless
 ]);
+
+const RLE_TS = "1.2.840.10008.1.2.5";
 
 /**
  * A unica sintaxe de transferencia cujo pixel data e big endian. Implicit VR e
@@ -175,18 +187,47 @@ export function parseDicom(byteArray: Uint8Array, fileName: string): DicomParseR
   }
 
   const meta = readMeta(dataSet);
-  const needsDecompression = meta.transferSyntax
-    ? COMPRESSED_SYNTAXES.has(meta.transferSyntax)
-    : false;
+  const ts = meta.transferSyntax;
+  // RLE e decodificavel aqui, entao `needsDecompression` e falso: o app abre o
+  // arquivo. Uma sintaxe so na `COMPRESSED_SYNTAXES` continua recusada.
+  const needsDecompression = ts ? COMPRESSED_SYNTAXES.has(ts) : false;
+  const ehRle = ts === RLE_TS;
 
   const element = dataSet.elements.x7fe00010;
   const expected = meta.rows * meta.columns * meta.numberOfFrames;
   const blocker = volumeBlocker(meta, needsDecompression, Boolean(element));
 
   let volume: DicomVolume | null = null;
-  if (!blocker && element && expected > 0) {
+  const signed = meta.pixelRepresentation === "signed";
+
+  if (ehRle && !needsDecompression && element && expected > 0) {
+    // Encapsulado: o pixel data vem em fragmentos dentro de uma sequencia, e
+    // nao em bytes soltos. O caminho nativo abaixo nem se aplica.
+    try {
+      const fragmentos = extraiFragmentos(byteArray, element.dataOffset, element.length);
+      volume = decodificaRleVolume(
+        byteArray,
+        fragmentos,
+        meta.rows,
+        meta.columns,
+        meta.numberOfFrames,
+        signed,
+        meta.rescaleSlope,
+        meta.rescaleIntercept,
+        singleFileSliceSpacing(meta, meta.numberOfFrames),
+        meta.pixelSpacing,
+        [fileName],
+      );
+    } catch (erro) {
+      // Um RLE corrompido precisa de uma mensagem que diga QUE, senao vira
+      // "sem volume" e o usuario culpa o exame.
+      throw new Error(
+        `Nao consegui descomprimir o RLE de "${fileName}": ` +
+          `${(erro as Error).message ?? erro}`,
+      );
+    }
+  } else if (!blocker && element && expected > 0) {
     const count = Math.min(expected, Math.floor(element.length / 2));
-    const signed = meta.pixelRepresentation === "signed";
     volume = {
       values: extractNativeValues(
         byteArray,

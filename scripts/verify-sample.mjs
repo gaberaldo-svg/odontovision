@@ -110,6 +110,8 @@ check("HU ar", huAt(2, 2), -900, 8);
 console.log("\n-- gêmeo big endian da própria fixture --");
 const { parseDicom } = await import("../lib/dicom/parse.ts");
 const { huAt: huAtLib } = await import("../lib/dicom/volume.ts");
+const { descomprimePackBits, decodificaFrameRle, RleError } =
+  await import("../lib/dicom/rle.ts");
 const LE_UID = "1.2.840.10008.1.2.1";
 const BE_UID = "1.2.840.10008.1.2.2";
 if (LE_UID.length !== BE_UID.length) {
@@ -160,6 +162,204 @@ if (LE_UID.length !== BE_UID.length) {
   // E o HU, pela mesma conta que a tela usa.
   check("HU idêntico no centro",
     huAtLib(rBe.volume, 32, 32, 0), huAtLib(rLe.volume, 32, 32, 0), 0.001);
+}
+
+// --- gêmeo RLE da própria fixture ---
+// RLE Lossless (PS3.5 Anexo G) é o primeiro codec que o app decodifica. Este
+// caso nasceu de um arquivo real (MR_small_RLE.dcm, do pydicom), que é o
+// gêmeo comprimido de MR_small.dcm: comparar os dois voxel a voxel é o que
+// prova o decoder.
+//
+// O teste não baixa nada: ele **fabrica** o gêmeo RLE da própria fixture, com
+// um encoder PackBits escrito aqui. Isso cobre o decoder em qualquer máquina,
+// offline — e o encoder usa runs de repetição de propósito, porque um encoder
+// só de literais deixaria o caminho principal do decoder (a run) sem teste.
+console.log("\n-- gêmeo RLE da própria fixture --");
+
+/**
+ * PackBits do DICOM, o inverso do decoder. Os dois casos que importam:
+ *  - `0x00` grava UM literal (é assim que o DICOM se diferencia do Apple);
+ *  - 0xFF é uma run de 2 (o menor repeatcount), então 130..255 viram runs.
+ */
+function empacotaPackBits(dados) {
+  const saida = [];
+  let i = 0;
+  while (i < dados.length) {
+    // Conta a run de repetição, mas uma run de 2 bytes não paga o custo
+    // (2 bytes de controle+valor contra 2 literais = 3 bytes), então o
+    // mínimo é 3.
+    let run = 1;
+    while (i + run < dados.length && dados[i + run] === dados[i] && run < 128) run++;
+    if (run >= 3) {
+      saida.push(257 - run, dados[i]);
+      i += run;
+    } else {
+      // Coleta literais até achar uma run de 3 ou mais.
+      let j = i;
+      let tamanho = 0;
+      while (j < dados.length && tamanho < 128) {
+        const r =
+          j + 2 < dados.length && dados[j] === dados[j + 1] && dados[j] === dados[j + 2] ? 3 : 1;
+        if (r === 3) break;
+        j += r;
+        tamanho += r;
+      }
+      if (tamanho === 0) { j = i + 1; tamanho = 1; }
+      saida.push(tamanho - 1);
+      for (let k = 0; k < tamanho; k++) saida.push(dados[i + k]);
+      i += tamanho;
+    }
+  }
+  return saida;
+}
+
+/** Monta um frame RLE de 16 bits a partir dos valores, em dois segmentos. */
+function frameRle(valores, signed) {
+  const msb = new Uint8Array(valores.length);
+  const lsb = new Uint8Array(valores.length);
+  for (let i = 0; i < valores.length; i++) {
+    const v = signed ? ((valores[i] << 16) >> 16) : valores[i] & 0xffff;
+    msb[i] = (v >> 8) & 0xff;
+    lsb[i] = v & 0xff;
+  }
+  const segMsb = empacotaPackBits(msb);
+  const segLsb = empacotaPackBits(lsb);
+  const cabecalho = new Uint8Array(64);
+  const hv = new DataView(cabecalho.buffer);
+  hv.setUint32(0, 2, true);            // 2 segmentos
+  hv.setUint32(4, 64, true);           // segmento 1 (MSB) começa no fim do header
+  hv.setUint32(8, 64 + segMsb.length, true); // segmento 2 (LSB)
+  const frame = new Uint8Array(64 + segMsb.length + segLsb.length);
+  frame.set(cabecalho, 0);
+  frame.set(segMsb, 64);
+  frame.set(segLsb, 64 + segMsb.length);
+  return frame;
+}
+
+// Reconstroi o .dcm: troca a sintaxe por RLE, troca o pixel data nativo por
+// uma sequencia encapsulada (item vazio = Basic Offset Table, item do frame,
+// e o Sequence Delimitation Item no fim).
+const RLE_UID = "1.2.840.10008.1.2.5";
+if (LE_UID.length !== RLE_UID.length) {
+  console.log("  FAIL  UIDs de tamanhos diferentes: a troca no lugar nao cabe");
+  fail++;
+} else {
+  const rLe = parseDicom(new Uint8Array(byteArray), "phantom-64.dcm");
+  const v = rLe.volume;
+  const frame = frameRle(v.values, true);
+  const rleBytes = new Uint8Array(byteArray); // copia
+
+  const uidLe = new TextEncoder().encode(LE_UID);
+  const uidRle = new TextEncoder().encode(RLE_UID);
+  let trocouUid = false;
+  for (let i = 0; i + uidLe.length <= rleBytes.length; i++) {
+    let igual = true;
+    for (let k = 0; k < uidLe.length; k++) if (rleBytes[i + k] !== uidLe[k]) { igual = false; break; }
+    if (!igual) continue;
+    rleBytes.set(uidRle, i);
+    trocouUid = true;
+    break;
+  }
+  check("sintaxe trocada por RLE", trocouUid, true);
+
+  // Constroi a sequencia e substitui o pixel data in-place. O tamanho muda,
+  // entao o arquivo inteiro e remontado a partir do elemento original.
+  const leEl = dicomParser.parseDicom(rleBytes).elements.x7fe00010;
+  const antes = rleBytes.subarray(0, leEl.dataOffset);
+  const depois = rleBytes.subarray(leEl.dataOffset + leEl.length);
+
+  const item = (payload) => {
+    const b = new Uint8Array(8 + payload.length);
+    const dv = new DataView(b.buffer);
+    dv.setUint16(0, 0xfffe, true); dv.setUint16(2, 0xe000, true);
+    dv.setUint32(4, payload.length, true);
+    b.set(payload, 8);
+    return b;
+  };
+  const delimitador = new Uint8Array(8);
+  const dvDel = new DataView(delimitador.buffer);
+  dvDel.setUint16(0, 0xfffe, true); dvDel.setUint16(2, 0xe0dd, true);
+
+  const sequencia = new Uint8Array(item(new Uint8Array(0)).length + item(frame).length + delimitador.length);
+  const i0 = item(new Uint8Array(0)), i1 = item(frame);
+  sequencia.set(i0, 0);
+  sequencia.set(i1, i0.length);
+  sequencia.set(delimitador, i0.length + i1.length);
+
+  // O pixel data e o ultimo elemento do arquivo, entao `antes` termina no
+  // cabecalho de 12 bytes (tag+VR+reservado+length) e `depois` tem quase nada.
+  // O length ocupa os 4 ultimos bytes de `antes` e vira indefinido
+  // (0xFFFFFFFF) -- e assim que pixel data encapsulado se anuncia. A sequencia
+  // entra colada, em `antes.length`.
+  const rleDcm = new Uint8Array(antes.length + sequencia.length + depois.length);
+  rleDcm.set(antes, 0);
+  const hdr = new DataView(rleDcm.buffer);
+  hdr.setUint32(antes.length - 4, 0xffffffff, true);
+  rleDcm.set(sequencia, antes.length);
+  rleDcm.set(depois, antes.length + sequencia.length);
+
+  const rRle = parseDicom(rleDcm, "phantom-64-rle.dcm");
+  check("RLE não pede descompressão", rRle.needsDecompression, false);
+  check("RLE vira volume", !!rRle.volume, true);
+  check("mesma matriz", rRle.volume
+    ? `${rRle.volume.columns}x${rRle.volume.rows}x${rRle.volume.slices}`
+    : "-", `${v.columns}x${v.rows}x${v.slices}`);
+  // A comparação que importa: os valores tem de ser IDÊNTICOS aos da fixture
+  // crua. Um check de "não é NaN" passaria com bytes trocados.
+  check("primeiros valores idênticos ao arquivo cru",
+    rRle.volume ? Array.from(rRle.volume.values.slice(0, 4)).join(" ") : "-",
+    Array.from(v.values.slice(0, 4)).join(" "));
+  check("volume inteiro idêntico, voxel a voxel",
+    rRle.volume !== null && rRle.volume.values.length === v.values.length
+      && rRle.volume.values.every((x, i) => x === v.values[i]), true);
+  check("mesmo HU no centro", rRle.volume
+    ? huAtLib(rRle.volume, 32, 32, 0) : NaN, huAtLib(v, 32, 32, 0), 0.001);
+  check("mesmo HU no ar (o minimo, onde o RLE mais comprime)",
+    rRle.volume ? huAtLib(rRle.volume, 2, 2, 0) : NaN, huAtLib(v, 2, 2, 0), 0.001);
+  check("mesmo sliceSpacing", rRle.volume?.sliceSpacing, v.sliceSpacing);
+}
+
+// O `0x00` do PackBits do DICOM copia UM literal. Se o decoder tratar como
+// no-op (a convenção do Apple), a imagem sai deslocada do primeiro `0x00` em
+// diante — e os primeiros pixels ainda batem, então nenhum sintoma aparece.
+console.log("\n-- PackBits do DICOM: 0x00 copia um literal --");
+check("0x00 seguido de byte = 1 byte de saída",
+  Array.from(descomprimePackBits(new Uint8Array([0x00, 0x07]), 1)).join(" "), "7");
+// `0x00` como no-op (convenção Apple) leria `0x00, 42, 0, 99` como 42, 99
+// pulando um byte e errando em silêncio. Como literal de 1, dá 42, 99.
+check("0x00 copia UM literal, não é no-op",
+  Array.from(descomprimePackBits(new Uint8Array([0, 42, 0, 99]), 2)).join(" "), "42 99");
+check("literal de 3 bytes (controle 2)", 
+  Array.from(descomprimePackBits(new Uint8Array([2, 10, 20, 30]), 3)).join(" "), "10 20 30");
+check("run de 3 (controle 254)", 
+  Array.from(descomprimePackBits(new Uint8Array([254, 8, 9]), 3)).join(" "), "8 8 8");
+check("run de 128 (controle 129)", 
+  Array.from(descomprimePackBits(new Uint8Array([129, 5]), 128)).every((b) => b === 5), true);
+check("run de 2 (controle 255)", 
+  Array.from(descomprimePackBits(new Uint8Array([255, 6]), 2)).join(" "), "6 6");
+check("mistura de run e literal na ordem",
+  Array.from(descomprimePackBits(new Uint8Array([254, 1, 1, 99, 77]), 5)).join(" "), "1 1 1 99 77");
+// A saída é limitada: bytes de sobra de um segmento não podem vazar para o
+// pixel seguinte, ou o resto do volume sai deslocado.
+check("saída limitada ao tamanho esperado",
+  Array.from(descomprimePackBits(new Uint8Array([254, 1, 1, 1, 1]), 2)).join(" "), "1 1");
+check("entrada curta não passa do esperado",
+  Array.from(descomprimePackBits(new Uint8Array([2, 1, 2]), 2)).join(" "), "1 2");
+
+console.log("\n-- header RLE inválido é recusado com nome --");
+// Um frame que não é RLE tem de dar erro nomeado, não pixels aleatórios.
+for (const [nome, entrada, motivo] of [
+  ["curto demais", new Uint8Array(10), "header-curto"],
+  ["segmentos = 0", (() => { const b = new Uint8Array(64); return b; })(), "segmentos-excedidos"],
+  ["segmentos = 16", (() => { const b = new Uint8Array(64); new DataView(b.buffer).setUint32(0, 16, true); return b; })(), "segmentos-excedidos"],
+]) {
+  try {
+    decodificaFrameRle(entrada, 100, true);
+    check(`recusa: ${nome} (${motivo})`, false, true);
+  } catch (e) {
+    check(`recusa: ${nome} (${motivo})`,
+      e instanceof RleError && e.motivo === motivo, true);
+  }
 }
 
 console.log("\n-- arquivo que a biblioteca não sabe ler --");

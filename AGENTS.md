@@ -187,7 +187,23 @@ Estas custaram bug real; todas já têm teste.
 - O verificador fabrica o gêmeo RLE da própria fixture, com um **encoder**
   PackBits escrito no teste — e ele usa runs de repetição de propósito, porque
   um encoder só de literais deixaria o caminho principal do decoder sem
-  cobertura. Nenhum `verify` depende de download.
+  cobertura. Também fabrica um RLE de **2 frames** (frame 2 = frame 1 + 7) para
+  pegar o bug de "reusar o mesmo fragmento em todos os cortes", que daria um
+  volume com N cópias da primeira imagem sem nenhum sintoma. Nenhum `verify`
+  depende de download.
+- **JPEG Baseline/Extended deliberadamente NÃO tem decoder ainda**, e o motivo
+  não é esforço: falta par de verificação. O `JPEG-lossy.dcm` do pydicom é a
+  única imagem JPEG em tons de cinza do conjunto e **não existe o gêmeo não
+  comprimido dela** — sem um par não há como provar voxel a voxel que o decoder
+  lê certo, que é o padrão que sustenta o big endian e o RLE. Some-se que ele é
+  JPEG **Extended** (`1.2.840.10008.1.2.4.51`, apesar do nome), 1024×256,
+  decodificando para 8 bits dentro de um container de 16 bits: entra
+  `PixelPaddingValue` na conta. Abrir JPEG pela rota do navegador
+  (`createImageBitmap` + canvas) daria Unsupported/8-bit sem escrever decoder,
+  ao custo de uma ida ao canvas por frame e de HU **aproximado** — o arquivo é
+  lossy, então o número de HU já nasce com erro. Se for para fazer, é uma
+  decisão de produto (mostrar HU aproximado em vez de recusar o arquivo), não
+  um detalhe de implementação.
 - `Sagital` é o nome da viewport; `"sagittal"` é o valor interno de `Plane`.
 
 ## Comandos
@@ -198,7 +214,7 @@ npm run build            # build de produção
 npm run sample           # gera a fixture de 1 corte em samples/
 npm run sample:series    # gera a série de 32 cortes + a variante multiframe
 npm run fetch:real       # baixa DICOMs REAIS de teste em samples/real/ (ver abaixo)
-npm run verify:sample    # valida a fixture de 1 corte (59 checks)
+npm run verify:sample    # valida a fixture de 1 corte (67 checks)
 npm run verify:volume    # valida HU/W-L/MPR/medicao/angulo/relatorio/anotacao puros (194 checks)
 npm run verify:series    # monta a série real e confere voxel a voxel (50 checks)
 npm run e2e              # Chrome headless via CDP, porta 3210

@@ -322,6 +322,96 @@ if (LE_UID.length !== RLE_UID.length) {
 // O `0x00` do PackBits do DICOM copia UM literal. Se o decoder tratar como
 // no-op (a convenção do Apple), a imagem sai deslocada do primeiro `0x00` em
 // diante — e os primeiros pixels ainda batem, então nenhum sintoma aparece.
+// --- RLE multi-frame ---
+// `decodificaRleVolume` promete aceitar N frames, e isso nunca foi testado com
+// N > 1. Um frame so nao pega o erro mais provavel: usar o MESMO fragmento para
+// todos os cortes, o que daria um volume com N copias da primeira imagem -- sem
+// nenhum sintoma, so a segunda anatomia errada.
+console.log("\n-- RLE multi-frame: cada corte vem do seu fragmento --");
+{
+  const rLe1 = parseDicom(new Uint8Array(byteArray), "phantom-64.dcm");
+  const base = Array.from(rLe1.volume.values);
+  // Frame 2 = frame 1 com +7 em cada voxel: assim os dois cortes sao
+  // distinguiveis, e um bug de "reusar o fragmento" aparece como copia
+  // identica em vez de um offset uniforme.
+  const frame2 = base.map((v) => v + 7);
+
+  // Monta a sequencia com DOIS itens de frame, mais o BOT vazio.
+  const item = (payload) => {
+    const b = new Uint8Array(8 + payload.length);
+    const dv = new DataView(b.buffer);
+    dv.setUint16(0, 0xfffe, true); dv.setUint16(2, 0xe000, true);
+    dv.setUint32(4, payload.length, true);
+    b.set(payload, 8);
+    return b;
+  };
+  const del = new Uint8Array(8);
+  const dvDel = new DataView(del.buffer);
+  dvDel.setUint16(0, 0xfffe, true); dvDel.setUint16(2, 0xe0dd, true);
+
+  const i0 = item(new Uint8Array(0));
+  const i1 = item(frameRle(Int16Array.from(base), true));
+  const i2 = item(frameRle(Int16Array.from(frame2), true));
+  const seq = new Uint8Array(i0.length + i1.length + i2.length + del.length);
+  seq.set(i0, 0); seq.set(i1, i0.length);
+  seq.set(i2, i0.length + i1.length);
+  seq.set(del, i0.length + i1.length + i2.length);
+
+  const leEl = dicomParser.parseDicom(new Uint8Array(byteArray)).elements.x7fe00010;
+  const antes = new Uint8Array(byteArray).subarray(0, leEl.dataOffset);
+  const depois = new Uint8Array(byteArray).subarray(leEl.dataOffset + leEl.length);
+  const multi = new Uint8Array(antes.length + seq.length + depois.length);
+  multi.set(antes, 0);
+  new DataView(multi.buffer).setUint32(antes.length - 4, 0xffffffff, true);
+  multi.set(seq, antes.length);
+  multi.set(depois, antes.length + seq.length);
+
+  // NumberOfFrames = "1" -> "2": mesmo comprimento, entao troca no lugar.
+  const rUid = new TextEncoder().encode(LE_UID);
+  const rRle = new TextEncoder().encode(RLE_UID);
+  for (let i = 0; i + rUid.length <= multi.length; i++) {
+    let ok = true;
+    for (let k = 0; k < rUid.length; k++) if (multi[i + k] !== rUid[k]) { ok = false; break; }
+    if (!ok) continue;
+    multi.set(rRle, i);
+    break;
+  }
+  const frames = new TextEncoder().encode("1");
+  for (let i = 0; i + frames.length <= multi.length; i++) {
+    if (multi[i] !== 0x31) continue;
+    // So o NumberOfFrames importa: nao mexer em nenhum outro "1" solto.
+    const tag = i - 8;
+    if (tag < 0) continue;
+    const tv = new DataView(multi.buffer, multi.byteOffset + tag, 4);
+    if (tv.getUint16(0, true) === 0x0028 && tv.getUint16(2, true) === 0x0008) {
+      multi[i] = 0x32; // "2"
+      break;
+    }
+  }
+
+  const rMulti = parseDicom(multi, "phantom-64-rle-2frames.dcm");
+  check("multi-frame vira volume", !!rMulti.volume, true);
+  check("slices = 2", rMulti.volume?.slices, 2);
+  check("total de voxels = 2 cortes", rMulti.volume?.values.length, base.length * 2);
+  check("corte 1 identico ao original",
+    rMulti.volume ? Array.from(rMulti.volume.values.slice(0, 4)).join(" ") : "-",
+    base.slice(0, 4).join(" "));
+  // O teste que pega o bug de "reusar o fragmento": os dois cortes tem de ser
+  // DIFERENTES, e o segundo exatamente o primeiro + 7.
+  check("corte 2 NAO e copia do corte 1",
+    rMulti.volume ? rMulti.volume.values[base.length] !== rMulti.volume.values[0] : false, true);
+  check("corte 2 identico ao esperado (+7)",
+    rMulti.volume ? rMulti.volume.values[base.length] : NaN, base[0] + 7, 0.001);
+  check("corte 2 inteiro correto",
+    rMulti.volume
+      ? rMulti.volume.values.every((v, i) => i < base.length || v === base[i - base.length] + 7)
+      : false, true);
+  check("corte 1 continua correto depois do 2",
+    rMulti.volume
+      ? rMulti.volume.values.slice(0, base.length).every((v, i) => v === base[i])
+      : false, true);
+}
+
 console.log("\n-- PackBits do DICOM: 0x00 copia um literal --");
 check("0x00 seguido de byte = 1 byte de saída",
   Array.from(descomprimePackBits(new Uint8Array([0x00, 0x07]), 1)).join(" "), "7");

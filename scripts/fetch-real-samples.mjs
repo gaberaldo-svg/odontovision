@@ -61,6 +61,16 @@ const ARQUIVOS = [
     porque: "o aviso de 'sintaxe comprimida' precisa vir de um arquivo real",
   },
   {
+    nome: "JPEG-lossy.dcm",
+    espera: "JPEG EXTENDED (nao Baseline): precisa descomprimir, sem volume",
+    porque:
+      "o caminho de fragmento funciona nele, mas nao ha gemeo NAO COMPRIMIDO " +
+      "dessa imagem no pydicom -- sem um par nao da para provar que um " +
+      "decoder JPEG le os valores certos. E ele decodifica para 8 bits dentro " +
+      "de um container de 16 (PixelPaddingValue), o que adiciona mais uma " +
+      "camada. Ver a nota sobre JPEG no AGENTS.md",
+  },
+  {
     nome: "MR_small_RLE.dcm",
     espera: "MR real em RLE Lossless: MESMA imagem de MR_small, vira volume identico",
     porque:

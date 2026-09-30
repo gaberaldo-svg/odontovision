@@ -14,6 +14,8 @@ export interface DicomMeta {
   columns: number;
   samplesPerPixel: number;
   numberOfFrames: number;
+  /** Ordena os cortes quando nao ha InstanceNumber. */
+  instanceNumber: number | null;
   pixelSpacing: number[] | null;
   sliceThickness: number | null;
   spacingBetweenSlices: number | null;
@@ -29,22 +31,38 @@ export interface DicomMeta {
   windowWidth: number | null;
 }
 
+/** Os tres planos ortogonais que o viewer reconstrói. */
+export type Plane = "axial" | "coronal" | "sagittal";
+
+/**
+ * Como os cortes de uma serie foram ordenados antes de virar volume.
+ * Vive aqui (e nao em series.ts) para que types.ts nao dependa do modulo que
+ * importa types.ts.
+ */
+export type OrderStrategy = "instanceNumber" | "imagePosition" | "fileName";
+
 /**
  * Pixel data em valores armazenados (nao em HU).
  * Guardamos o valor bruto e aplicamos
  *   HU = stored * rescaleSlope + rescaleIntercept
  * na leitura, que preserva a precisao original.
+ *
+ *(values) esta achatado em ordem [z][y][x], com z variando mais devagar.
  */
 export interface DicomVolume {
-  /** rows * columns * numberOfFrames valores armazenados. */
+  /** rows * columns * slices valores armazenados. */
   values: Int16Array | Uint16Array;
   rows: number;
   columns: number;
   slices: number;
   rescaleSlope: number;
   rescaleIntercept: number;
-  /** Espessura entre cortes, em mm. */
+  /** Espessura entre cortes, em mm. Derivada das posicoes quando possivel. */
   sliceSpacing: number | null;
+  /** Espacamento em X e Y, em mm. Necessario para o aspecto dos planos MPR. */
+  pixelSpacing: number[] | null;
+  /** Nomes dos arquivos de origem, na ordem do volume. */
+  sourceFileNames?: string[];
 }
 
 export interface DicomParseResult {
@@ -58,12 +76,28 @@ export interface DicomParseResult {
   warnings: string[];
 }
 
-export type WorkerRequest = {
-  id: number;
-  byteArray: ArrayBuffer;
-  fileName: string;
-};
+/** Resultado de montar varios cortes em um unico volume 3D. */
+export interface DicomSeriesResult {
+  ok: true;
+  fileNames: string[];
+  /** Metadados do primeiro corte ja ordenado (representam a serie). */
+  meta: DicomMeta;
+  volume: DicomVolume;
+  /** Como os cortes foram ordenados: instanceNumber, imagePosition ou fileName. */
+  orderedBy: OrderStrategy;
+  sliceSpacing: number | null;
+  /** Cortes ignorados por incompatibilidade, com o motivo. */
+  skipped: { fileName: string; reason: string }[];
+  warnings: string[];
+}
+
+export type DicomInputFile = { byteArray: ArrayBuffer; fileName: string };
+
+export type WorkerRequest =
+  | { id: number; kind: "single"; files: [DicomInputFile] }
+  | { id: number; kind: "series"; files: DicomInputFile[] };
 
 export type WorkerResponse =
   | { id: number; type: "result"; payload: DicomParseResult }
+  | { id: number; type: "series"; payload: DicomSeriesResult }
   | { id: number; type: "error"; payload: { fileName: string; message: string } };

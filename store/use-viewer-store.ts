@@ -3,11 +3,26 @@ import { ViewportType, Tool, Preset, ExamMetadata, MOCK_EXAM, MOCK_SLICE_COUNT }
 import type { DicomMeta, DicomVolume } from "@/lib/dicom/types";
 import { autoWindow } from "@/lib/dicom/volume";
 
+/** Voxel apontado pelos tres viewports ao mesmo tempo. */
+export interface Crosshair {
+  x: number;
+  y: number;
+  z: number;
+}
+
+/** Resumo da montagem da serie, para a sidebar e o console. */
+export interface SeriesInfo {
+  orderedBy: "instanceNumber" | "imagePosition" | "fileName";
+  fileCount: number;
+  skipped: { fileName: string; reason: string }[];
+}
+
 interface ViewerState {
   activeTool: Tool;
   activePreset: Preset | null;
   windowWidth: number;
   windowCenter: number;
+  /** Indice do corte em cada plano. Somados, formam o crosshair: (x,y,z). */
   slices: Record<ViewportType, number>;
   maxSlices: Record<ViewportType, number>;
   zoomLevel: number;
@@ -20,6 +35,8 @@ interface ViewerState {
   dicomMeta: DicomMeta | null;
   /** Volume real, ou null enquanto so houver o exame de demonstracao. */
   volume: DicomVolume | null;
+  /** Como a serie foi ordenada, ou null se veio um unico arquivo. */
+  seriesInfo: SeriesInfo | null;
   cursorHU: number | null;
   isDemoLoaded: boolean;
   activeViewport: ViewportType;
@@ -29,11 +46,13 @@ interface ViewerState {
   setPreset: (preset: Preset) => void;
   setWindowLevel: (ww: number, wc: number) => void;
   setSlice: (viewport: ViewportType, index: number) => void;
+  /** Move o crosshair: atualiza os tres planos de uma vez. */
+  setCrosshair: (x: number, y: number, z: number) => void;
   setCursorHU: (hu: number | null) => void;
   toggleSidebar: () => void;
   loadDemoExam: () => void;
   /** Entra com o resultado real do worker de DICOM. */
-  loadVolume: (meta: DicomMeta, volume: DicomVolume | null) => void;
+  loadVolume: (meta: DicomMeta, volume: DicomVolume | null, series?: SeriesInfo | null) => void;
   setLoadError: (message: string | null) => void;
   clearExam: () => void;
   resetView: () => void;
@@ -53,6 +72,7 @@ const initialState = {
   metadata: null,
   dicomMeta: null,
   volume: null,
+  seriesInfo: null,
   cursorHU: null,
   isDemoLoaded: false,
   activeViewport: "Axial" as ViewportType,
@@ -76,6 +96,19 @@ function toExamMetadata(meta: DicomMeta, volume: DicomVolume | null): ExamMetada
   };
 }
 
+/**
+ * Numero de cortes de cada plano para um volume real.
+ * Coronal percorre Y (rows) e Sagital percorre X (columns): sao as dimensoes
+ * da matriz, nao a contagem de cortes.
+ */
+function planeSliceCounts(volume: DicomVolume): Record<ViewportType, number> {
+  return {
+    Axial: Math.max(1, volume.slices),
+    Coronal: Math.max(1, volume.rows),
+    Sagital: Math.max(1, volume.columns),
+  };
+}
+
 export const useViewerStore = create<ViewerState>((set) => ({
   ...initialState,
 
@@ -96,6 +129,20 @@ export const useViewerStore = create<ViewerState>((set) => ({
     return { slices: { ...state.slices, [viewport]: clampedIndex } };
   }),
 
+  // Os indices de fatia ja sao as coordenadas do crosshair: o plano Axial
+  // fixa z, Coronal fixa y e Sagital fixa x. Mover o crosshair e escrever
+  // nos tres de uma vez, sem estado duplicado para sair de sincronia.
+  setCrosshair: (x, y, z) => set((state) => {
+    const clamp = (value: number, max: number) => Math.max(0, Math.min(value, max - 1));
+    return {
+      slices: {
+        Axial: clamp(z, state.maxSlices.Axial),
+        Coronal: clamp(y, state.maxSlices.Coronal),
+        Sagital: clamp(x, state.maxSlices.Sagital),
+      },
+    };
+  }),
+
   setCursorHU: (cursorHU) => set({ cursorHU }),
 
   toggleSidebar: () => set((state) => ({ isSidebarOpen: !state.isSidebarOpen })),
@@ -104,6 +151,7 @@ export const useViewerStore = create<ViewerState>((set) => ({
     metadata: MOCK_EXAM,
     dicomMeta: null,
     volume: null,
+    seriesInfo: null,
     isExamLoaded: true,
     maxSlices: MOCK_SLICE_COUNT,
     isDemoLoaded: true,
@@ -115,36 +163,39 @@ export const useViewerStore = create<ViewerState>((set) => ({
     },
   }),
 
-  loadVolume: (meta, volume) => set((state) => {
-    // Uma fatia unica nao permite reconstruir coronal/sagital, que precisam
-    // de um volume ao longo de Z. Esses viewports ficam desabilitados ate
-    //_phase_ de leitura em multiplos arquivos.
-    const axialSlices = Math.max(1, volume?.slices ?? meta.numberOfFrames);
-    const hasVolume = volume !== null;
-    const maxSlices: Record<ViewportType, number> = hasVolume
-      ? { Axial: axialSlices, Coronal: 1, Sagital: 1 }
+loadVolume: (meta, volume, series) => set((state) => {
+    // Com volume de verdade os tres planos abrem: Coronal percorre Y e
+    // Sagital percorre X. Um .dcm solto tem slices = 1, e ai so o axial
+    // tem dado — os outros ficam marcados como indisponiveis na UI.
+    const maxSlices: Record<ViewportType, number> = volume
+      ? planeSliceCounts(volume)
       : MOCK_SLICE_COUNT;
 
-    // Se o exame nao traz janela propia, derivamos uma que caiba no volume.
-    const derived = hasVolume ? autoWindow(volume) : null;
+    // Se o exame nao traz janela propria, derivamos uma que caiba no volume.
+    const derived = volume ? autoWindow(volume) : null;
     const windowWidth = meta.windowWidth ?? derived?.windowWidth ?? state.windowWidth;
     const windowCenter = meta.windowCenter ?? derived?.windowCenter ?? state.windowCenter;
+
+    // Abrimos pelo centro do volume, e nao pelo indice 0, para o exame nao
+    // comecar no ar ao redor.
+    const counts = maxSlices;
 
     return {
       metadata: toExamMetadata(meta, volume),
       dicomMeta: meta,
       volume,
+      seriesInfo: series ?? null,
       isExamLoaded: true,
       isDemoLoaded: false,
-      maxSlices,
+      maxSlices: counts,
       loadError: null,
       windowWidth,
       windowCenter,
       activePreset: null,
       slices: {
-        Axial: Math.floor((axialSlices - 1) / 2),
-        Coronal: 0,
-        Sagital: 0,
+        Axial: Math.floor((counts.Axial - 1) / 2),
+        Coronal: Math.floor((counts.Coronal - 1) / 2),
+        Sagital: Math.floor((counts.Sagital - 1) / 2),
       },
     };
   }),
@@ -161,8 +212,8 @@ export const useViewerStore = create<ViewerState>((set) => ({
     panOffset: { x: 0, y: 0 },
     slices: {
       Axial: Math.floor((state.maxSlices.Axial - 1) / 2),
-      Coronal: 0,
-      Sagital: 0,
+      Coronal: Math.floor((state.maxSlices.Coronal - 1) / 2),
+      Sagital: Math.floor((state.maxSlices.Sagital - 1) / 2),
     },
   })),
 }));

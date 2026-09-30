@@ -43,7 +43,10 @@ try {
 console.log(`\nparse: ${Object.keys(dataSet.elements).length} tags, ${dataSet.warnings.length} avisos\n`);
 
 console.log("-- file meta --");
-check("TransferSyntaxUID", dataSet.string("x00020010"), "1.2.840.10008.5.1.4.1.1.2");
+// A sintaxe de transferencia e 1.2.840.10008.1.2.1 (Explicit VR LE). O UID
+// 1.2.840.10008.5.1.4.1.1.2 e o SOP Class de CT Image Storage e NAO pode
+// aparecer aqui: o gerador antigo colocava esse valor no lugar errado.
+check("TransferSyntaxUID", dataSet.string("x00020010"), "1.2.840.10008.1.2.1");
 check("MediaStorageSOPClassUID", dataSet.string("x00020002"), "1.2.840.10008.5.1.4.1.1.2");
 
 console.log("\n-- paciente / serie --");
@@ -59,8 +62,9 @@ check("SamplesPerPixel", dataSet.uint16("x00280002"), 1);
 check("NumberOfFrames", dataSet.intString("x00280008"), 1);
 check("PixelSpacing", dataSet.string("x00280030"), "0.25\\0.25");
 check("SliceThickness", dataSet.string("x00180050"), "2.0");
-check("ImagePositionPatient", dataSet.string("x00200032"), "-102.5\\-102.5\\-45.0");
-check("ImageOrientationPatient", dataSet.string("x00200037"), "1\\0\\0");
+check("ImagePositionPatient", dataSet.string("x00200032"), "-8.0\\-8.0\\-45.0");
+// ImageOrientationPatient tem 6 valores (3 da linha + 3 da coluna).
+check("ImageOrientationPatient", dataSet.string("x00200037"), "1\\0\\0\\0\\1\\0");
 
 console.log("\n-- escala / bits --");
 check("RescaleSlope", dataSet.string("x00281052"), "1");

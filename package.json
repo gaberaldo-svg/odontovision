@@ -7,9 +7,11 @@
                     "build":  "next build",
                     "start":  "next start",
                     "sample":  "node scripts/make-sample-dcm.mjs",
+                    "sample:series":  "node scripts/make-sample-series.mjs",
                     "verify:sample":  "node scripts/verify-sample.mjs",
                     "verify:volume":  "node --experimental-strip-types scripts/verify-volume.mjs",
-                    "verify":  "tsc --noEmit && next build && npm run verify:sample && npm run verify:volume && npm run e2e",
+                    "verify:series":  "node --experimental-strip-types scripts/verify-series.mjs",
+                    "verify":  "tsc --noEmit && next build && npm run sample && npm run sample:series && npm run verify:sample && npm run verify:volume && npm run verify:series && npm run e2e",
                     "e2e":  "node scripts/e2e-dicom.mjs"
                 },
     "dependencies":  {

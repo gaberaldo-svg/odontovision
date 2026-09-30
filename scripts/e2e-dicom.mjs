@@ -1,4 +1,4 @@
-// Teste E2E da Fase 2: sobe o app, abre no Chrome via CDP, injeta a fixture
+﻿// Teste E2E da Fase 2: sobe o app, abre no Chrome via CDP, injeta a fixture
 // no input de arquivo e verifica o que o browser realmente exibiu.
 //
 //   node scripts/e2e-dicom.mjs
@@ -6,14 +6,18 @@
 // Requer o build de producao (npm run build) e Chrome/Edge instalado.
 
 import { spawn } from "node:child_process";
-import { readFileSync, existsSync } from "node:fs";
+import { readFileSync, readdirSync, existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
+// A fixture e a unica fonte do valor esperado: o E2E nao importa a logica de
+// montagem do app, importa o phantom para conferir voxel a voxel.
+import { huAtVoxel } from "./make-sample-series.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(HERE, "..");
 const SAMPLE = join(ROOT, "samples", "phantom-64.dcm");
+const SERIES_DIR = join(ROOT, "samples", "series");
 const PORT = 3210;
 const CDP_PORT = 9222;
 const CHROME_CANDIDATES = [
@@ -197,8 +201,8 @@ try {
   check("input[type=file] presente", probe.hasFileLoader === true);
   check("accept inclui .dcm", /\.dcm/.test(probe.accept ?? ""), probe.accept ?? "");
   check(
-    "botao 'Ler arquivo .dcm' existe",
-    (probe.botoes ?? []).some((b) => /Ler arquivo/i.test(b)),
+    "botoes '.dcm' e 'Pasta' existem",
+    (probe.botoes ?? []).some((b) => /^\.?dcm$/i.test(b)) && (probe.botoes ?? []).some((b) => /Pasta/i.test(b)),
     (probe.botoes ?? []).join(" | ").slice(0, 70),
   );
   check("nenhum canvas antes de carregar", probe.canvasAntes === 0, `${probe.canvasAntes}`);
@@ -228,7 +232,8 @@ try {
   check("status apareceu na UI", !!status, status ?? "(vazio)");
   check(
     "status bate com a fixture",
-    /64x64/.test(status ?? "") && /46 tags/.test(status ?? "") && /0\.25 x 0\.25 mm/.test(status ?? ""),
+    /64x64/.test(status ?? "") && /47 tags/.test(status ?? "") && /0\.25 x 0\.25 mm/.test(status ?? ""),
+    status ?? "",
   );
 
   const groupHeader = consoleLines.find((l) => /\[OdontoVision\]/.test(l.text));
@@ -433,6 +438,284 @@ try {
     amostras.filter((a) => a.hu !== null).map((a) => `${a.fy}:${a.hu}`).join(" "));
   check("HU varia com a camada (nao e constante)", new Set(lidos).size >= 3,
     `distintos: ${[...new Set(lidos)].join(", ")}`);
+
+  // --- Fase 4a: serie de 32 cortes, MPR nos tres planos ---
+  console.log("\n== FASE 4a: MPR ==");
+
+  if (!existsSync(SERIES_DIR)) {
+    console.log("fixture de serie ausente, gerando com `npm run sample:series` ...");
+    await new Promise((resolve, reject) => {
+      const gen = spawn(process.execPath, [join(HERE, "make-sample-series.mjs")], {
+        cwd: ROOT,
+        stdio: "ignore",
+      });
+      gen.on("exit", (code) =>
+        code === 0 ? resolve() : reject(new Error(`gerador saiu com codigo ${code}`)),
+      );
+      gen.on("error", reject);
+    });
+  }
+  const arquivosSerie = readdirSync(SERIES_DIR)
+    .filter((f) => f.endsWith(".dcm"))
+    .sort();
+  check("32 cortes na fixture de serie", arquivosSerie.length === 32, `${arquivosSerie.length}`);
+
+  // Reusa o mesmo input, agora com os 32 arquivos: e o caminho que a UI
+  // percorre quando o usuario seleciona a serie inteira.
+  const { root: root2 } = await cdp.send("DOM.getDocument", { depth: -1 });
+  const { nodeId: nodeId2 } = await cdp.send("DOM.querySelector", {
+    nodeId: root2.nodeId,
+    selector: "input[type=file][multiple]",
+  });
+  check("input multi-selecao presente", Boolean(nodeId2), nodeId2 ? "" : "nao encontrei input[multiple]");
+  await cdp.send("DOM.setFileInputFiles", {
+    nodeId: nodeId2,
+    files: arquivosSerie.map((f) => join(SERIES_DIR, f)),
+  });
+
+  let statusSerie = null;
+  for (let i = 0; i < 60; i++) {
+    await sleep(500);
+    const { result } = await cdp.send("Runtime.evaluate", {
+      expression: `document.querySelector('[role=status]')?.textContent?.trim() ?? null`,
+      returnByValue: true,
+    });
+    statusSerie = result.value;
+    if (statusSerie && /32 cortes/.test(statusSerie)) break;
+  }
+  check("UI reporta a serie montada", /64x64x32/.test(statusSerie ?? "") && /32 cortes/.test(statusSerie ?? ""),
+    statusSerie ?? "(vazio)");
+  check("UI informa a estrategia de ordenacao", /ordenado por instanceNumber/.test(statusSerie ?? ""),
+    statusSerie ?? "(vazio)");
+  check("UI informa o z spacing", /z 1\.00 mm/.test(statusSerie ?? ""), statusSerie ?? "(vazio)");
+
+  /** Estado dos tres viewports: existe canvas? indice atual? quantos cortes? */
+  const lerViewports = async () => {
+    const { result, exceptionDetails } = await cdp.send("Runtime.evaluate", {
+      expression: `(() => {
+        const out = {};
+        for (const el of document.querySelectorAll('[data-viewport]')) {
+          const nome = el.dataset.viewport;
+          const canvas = el.querySelector('canvas');
+          const rotulo = el.querySelector('[data-slice-index]');
+          let dark = true, meio = 0;
+          if (canvas && canvas.width > 0) {
+            const ctx = canvas.getContext('2d');
+            // Um plano renderizado tem uma mancha clara no meio (o nucleo).
+            const d = ctx.getImageData(Math.round(canvas.width/2), Math.round(canvas.height/2), 1, 1).data;
+            meio = d[0];
+            dark = d[0] === 0 && d[1] === 0 && d[2] === 0;
+          }
+          out[nome] = {
+            temCanvas: Boolean(canvas),
+            indisponivel: /indispon/i.test(el.textContent ?? ''),
+            valor: rotulo ? Number(rotulo.dataset.sliceIndex) : null,
+            max: rotulo ? Number(rotulo.dataset.sliceCount) : null,
+            dark, meio,
+            rect: canvas ? (({x,y,width,height}) => ({x,y,width,height}))(canvas.getBoundingClientRect()) : null,
+          };
+        }
+        return out;
+      })()`,
+      returnByValue: true,
+    });
+    // Sem isto, uma excecao dentro do probe vira {} silencioso e o teste
+    // falha com "tres viewports presentes" sem dizer por que.
+    if (exceptionDetails) {
+      throw new Error(
+        `probe lerViewports: ${exceptionDetails.exception?.description ?? exceptionDetails.text}`,
+      );
+    }
+    return result.value ?? {};
+  };
+
+  const vp = await lerViewports();
+  check("tres viewports presentes", Boolean(vp.Axial && vp.Coronal && vp.Sagital),
+    Object.keys(vp).join(", "));
+  check("Axial tem canvas", vp.Axial?.temCanvas === true);
+  check("Coronal deixou de estar indisponivel", vp.Coronal?.indisponivel === false, `indisponivel=${vp.Coronal?.indisponivel}`);
+  check("Sagital deixou de estar indisponivel", vp.Sagital?.indisponivel === false, `indisponivel=${vp.Sagital?.indisponivel}`);
+  check("Coronal tem canvas", vp.Coronal?.temCanvas === true);
+  check("Sagital tem canvas", vp.Sagital?.temCanvas === true);
+
+  check("axial tem 32 cortes", vp.Axial?.max === 32, `cortes=${vp.Axial?.max}`);
+  check("coronal percorre 64 linhas", vp.Coronal?.max === 64, `cortes=${vp.Coronal?.max}`);
+  check("sagital percorre 64 colunas", vp.Sagital?.max === 64, `cortes=${vp.Sagital?.max}`);
+
+  // O centro do volume e material denso: nenhum dos tres planos pode sair
+  // todo preto, o que seria o sintoma de "MPR desenhou a imagem errada".
+  check("axial tem conteudo no centro", vp.Axial?.dark === false, `cinza=${vp.Axial?.meio}`);
+  check("coronal tem conteudo no centro", vp.Coronal?.dark === false, `cinza=${vp.Coronal?.meio}`);
+  check("sagital tem conteudo no centro", vp.Sagital?.dark === false, `cinza=${vp.Sagital?.meio}`);
+
+  // --- geometria da fixture ---
+  // Replicada aqui de proposito: o teste precisa saber onde cada voxel cai na
+  // tela, mas nao deve copiar a logica de montagem do app.
+  const COLS = 64;
+  const SLICES = 32;
+  const Z_ASPECT = 4; // 1.00 mm de z contra 0.25 mm de pixel
+  const PLANOS = {
+    Axial: { cols: COLS, rows: COLS, aspect: 1, u: "x", v: "y" },
+    Coronal: { cols: COLS, rows: SLICES, aspect: Z_ASPECT, u: "x", v: "z" },
+    Sagital: { cols: COLS, rows: SLICES, aspect: Z_ASPECT, u: "y", v: "z" },
+  };
+
+  /**
+   * Onde a imagem de verdade esta dentro do canvas.
+   *
+   * O viewport NAO e quadrado -- o grid estica a altura, e o `aspect-square`
+   * perde para o stretch. A imagem entra centrada e sobra tarja preta nas duas
+   * pontas. Medir por fracao da ALTURA do canvas aponta para o vazio, que e o
+   * que fazia o coronal ler ar em todo lugar sem nenhum erro na tela.
+   */
+  const imagemDoPlano = (plano, rect) => {
+    const g = PLANOS[plano];
+    // `rows * aspect`: e o que o app compara com `columns` para escolher o
+    // scale. Esquecer o aspect aqui faz o ponto cair fora da imagem e o teste
+    // acusar MPR quebrado quando o MPR esta certo.
+    const escala = Math.min(rect.width, rect.height) / Math.max(g.cols, g.rows * g.aspect);
+    const largura = g.cols * escala;
+    const altura = g.rows * escala * g.aspect;
+    return {
+      x: rect.x + (rect.width - largura) / 2,
+      y: rect.y + (rect.height - altura) / 2,
+      escala,
+      g,
+    };
+  };
+
+  /** Coordenada de viewport do centro do voxel (u, v) dentro do plano. */
+  const pontoNoVoxel = async (plano, u, v) => {
+    const rect = (await lerViewports())[plano]?.rect;
+    if (!rect) return null;
+    const img = imagemDoPlano(plano, rect);
+    return {
+      x: Math.round(img.x + (u + 0.5) * img.escala),
+      y: Math.round(img.y + (v + 0.5) * img.escala * img.g.aspect),
+    };
+  };
+
+  const mouseNoVoxel = async (plano, u, v) => {
+    const p = await pontoNoVoxel(plano, u, v);
+    if (!p) return { texto: null, alvo: "sem viewport" };
+    // Quem esta de fato sob o ponto? Se um overlay cobre o canvas, o hover
+    // nunca chega no viewport e o HU fica com o valor anterior.
+    const { result: alvoRemote } = await cdp.send("Runtime.evaluate", {
+      expression: `(() => {
+        const el = document.elementFromPoint(${p.x}, ${p.y});
+        if (!el) return "nada";
+        const vp = el.closest('[data-viewport]');
+        return (vp ? vp.dataset.viewport : "fora") + "/" + el.tagName.toLowerCase();
+      })()`,
+      returnByValue: true,
+    });
+    const alvo = alvoRemote.value ?? "?";
+    // dois eventos: o primeiro pode ser tratado como entrada, o segundo move de fato
+    await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: p.x, y: p.y, button: "none", pointerType: "mouse" });
+    await sleep(120);
+    await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: p.x + 1, y: p.y, button: "none", pointerType: "mouse" });
+    await sleep(320);
+    return { texto: await lerHu(), alvo };
+  };
+
+  const cliqueNoVoxel = async (plano, u, v) => {
+    const p = await pontoNoVoxel(plano, u, v);
+    if (!p) return false;
+    for (const type of ["mousePressed", "mouseReleased"]) {
+      await cdp.send("Input.dispatchMouseEvent", {
+        type, x: p.x, y: p.y, button: "left", clickCount: 1,
+        buttons: type === "mousePressed" ? 1 : 0, pointerType: "mouse",
+      });
+    }
+    await sleep(700);
+    return true;
+  };
+
+  // --- crosshair sincronizado entre os tres planos ---
+  // O indice de cada viewport e uma coordenada do voxel: Axial=z, Coronal=y,
+  // Sagital=x. Clicar num plano entao mexe nas DUAS coordenadas livres e
+  // preserva a do proprio plano.
+  console.log("\n-- crosshair a partir do plano axial --");
+  const antesAxial = await lerViewports();
+  const cliqueouAxial = await cliqueNoVoxel("Axial", 4, 9);
+  check("clique no canvas do axial registrado", cliqueouAxial);
+  const depoisAxial = await lerViewports();
+  check("sagital (X) foi para o voxel 4", depoisAxial.Sagital?.valor === 4,
+    `x: ${antesAxial.Sagital?.valor} -> ${depoisAxial.Sagital?.valor}`);
+  check("coronal (Y) foi para o voxel 9", depoisAxial.Coronal?.valor === 9,
+    `y: ${antesAxial.Coronal?.valor} -> ${depoisAxial.Coronal?.valor}`);
+  check("axial (Z) nao se moveu, ele e o plano clicado",
+    depoisAxial.Axial?.valor === antesAxial.Axial?.valor,
+    `z: ${antesAxial.Axial?.valor} -> ${depoisAxial.Axial?.valor}`);
+
+  // Clicar no coronal mexe em X (u) e Z (v), e preserva Y.
+  console.log("\n-- crosshair a partir do plano coronal --");
+  const antesCor = await lerViewports();
+  await cliqueNoVoxel("Coronal", 52, 20);
+  const depoisCor = await lerViewports();
+  check("sagital (X) acompanhou o coronal -> 52", depoisCor.Sagital?.valor === 52,
+    `x: ${antesCor.Sagital?.valor} -> ${depoisCor.Sagital?.valor}`);
+  check("axial (Z) acompanhou o coronal -> 20", depoisCor.Axial?.valor === 20,
+    `z: ${antesCor.Axial?.valor} -> ${depoisCor.Axial?.valor}`);
+  check("coronal (Y) ficou onde estava", depoisCor.Coronal?.valor === antesCor.Coronal?.valor,
+    `y: ${antesCor.Coronal?.valor} -> ${depoisCor.Coronal?.valor}`);
+  check("axial (Z) respeita o limite de 32 cortes", depoisCor.Axial?.valor <= 31,
+    `z=${depoisCor.Axial?.valor}`);
+
+  // --- HU exato nos tres planos ---
+  // Recentraliza o crosshair no voxel central: com o crosshair no canto, os
+  // planos ortogonais ficam inteiramente no ar e nao ha o que comparar.
+  console.log("\n-- HU exato nos tres planos --");
+  await cliqueNoVoxel("Axial", 32, 31);
+  const centro = await lerViewports();
+  check("crosshair recentralizado no voxel central",
+    centro.Sagital?.valor === 32 && centro.Coronal?.valor === 31,
+    `x=${centro.Sagital?.valor} y=${centro.Coronal?.valor}`);
+
+  // (u, v) de cada plano -> voxel, respeitando o eixo que o plano fixa.
+  const voxelDoPlano = {
+    Axial: (u, v, i) => ({ x: u, y: v, z: i }),
+    Coronal: (u, v, i) => ({ x: u, y: i, z: v }),
+    Sagital: (u, v, i) => ({ x: i, y: u, z: v }),
+  };
+
+  // Atravessa o phantom inteiro no eixo u: ar -> mole -> casca -> nucleo ->
+  // massa deslocada -> ar. E no eixo v para provar o aspecto 4x do z.
+  const PONTOS = [
+    [4, 15], [10, 15], [18, 15], [25, 15], [32, 15], [48, 15], [59, 15],
+    [32, 4], [32, 26],
+  ];
+
+  const perfisPorPlano = {};
+  for (const plano of ["Axial", "Coronal", "Sagital"]) {
+    const corte = (await lerViewports())[plano]?.valor;
+    const linhas = [];
+    const alvos = new Set();
+    let todosCerto = true;
+    for (const [u, v] of PONTOS) {
+      const vox = voxelDoPlano[plano](u, v, corte);
+      const esperado = huAtVoxel(vox.x, vox.y, vox.z);
+      const { texto, alvo } = await mouseNoVoxel(plano, u, v);
+      const lido = paraNum(texto);
+      alvos.add(alvo);
+      const bate = lido === esperado;
+      if (!bate) todosCerto = false;
+      linhas.push(`u${u}v${v}=${lido ?? "vazio"}${bate ? "" : ` esperado ${esperado}`}`);
+    }
+    perfisPorPlano[plano] = linhas.join(" ");
+    console.log(`  ${plano} [corte ${corte}]: ${perfisPorPlano[plano]}`);
+    check(`${plano}: HU exato do phantom em ${PONTOS.length} pontos`, todosCerto, perfisPorPlano[plano]);
+    check(`${plano}: o canvas esta sob o ponteiro`,
+      [...alvos].every((a) => a.startsWith(plano)), [...alvos].join(", "));
+  }
+
+  // O phantom e assimetrico de proposito: se os tres planos lessem a mesma
+  // imagem, um deles estaria desenhando o corte errado.
+  check("os tres planos devolvem perfis diferentes",
+    new Set(Object.values(perfisPorPlano)).size === 3);
+
+  check("nenhuma excecao na pagina apos a serie", pageErrors.length === 0,
+    pageErrors.join(" | ").slice(0, 200));
 
   if (process.env.VERBOSE) {
     console.log("\n=== console do browser ===");

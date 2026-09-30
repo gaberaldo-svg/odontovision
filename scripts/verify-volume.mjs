@@ -149,5 +149,182 @@ check("upscale 0.5 reduz", (() => {
   return small.width === 32 && small.height === 32;
 })());
 
+// ---------------------------------------------------------------------------
+// MPR: geometria dos tres planos
+//
+// Usamos um volume sintetico minúsculo com valor = 100*z + 10*y + x, que
+// torna qualquer erro de permutacao de eixo visivel: cada voxel tem um valor
+// unico, entao ler a coordenada errada da um numero errado.
+// ---------------------------------------------------------------------------
+
+console.log("\n== MPR ==");
+
+const {
+  planeDimensions,
+  planeAspect,
+  zAspect,
+  voxelFromPlane,
+  planeFromVoxel,
+  planeSliceCount,
+  planeHuAt,
+  planeSliceToImageData,
+  voxelSizeMm,
+} = await import("../lib/dicom/volume.ts");
+
+const COLS = 8;
+const ROWS = 6;
+const SLICES = 4;
+const mprValues = new Int16Array(COLS * ROWS * SLICES);
+for (let z = 0; z < SLICES; z++) {
+  for (let y = 0; y < ROWS; y++) {
+    for (let x = 0; x < COLS; x++) {
+      mprValues[z * ROWS * COLS + y * COLS + x] = 100 * z + 10 * y + x;
+    }
+  }
+}
+
+// pixel 0.5mm em X/Y e cortes a 2mm: cada corte vale 4 linhas no eixo vertical
+// dos planos MPR.
+const mprVolume = {
+  values: mprValues,
+  rows: ROWS,
+  columns: COLS,
+  slices: SLICES,
+  rescaleSlope: 1,
+  rescaleIntercept: 0,
+  sliceSpacing: 2,
+  pixelSpacing: [0.5, 0.5],
+};
+
+console.log("\n-- dimensoes dos planos --");
+check("axial: columns x rows", JSON.stringify(planeDimensions(mprVolume, "axial")) === JSON.stringify({ columns: 8, rows: 6 }),
+  JSON.stringify(planeDimensions(mprVolume, "axial")));
+check("coronal: columns x slices", JSON.stringify(planeDimensions(mprVolume, "coronal")) === JSON.stringify({ columns: 8, rows: 4 }),
+  JSON.stringify(planeDimensions(mprVolume, "coronal")));
+check("sagital: rows x slices", JSON.stringify(planeDimensions(mprVolume, "sagital")) === JSON.stringify({ columns: 6, rows: 4 }),
+  JSON.stringify(planeDimensions(mprVolume, "sagital")));
+
+console.log("\n-- indice de cada plano --");
+check("axial tem slices cortes", planeSliceCount(mprVolume, "axial") === 4);
+check("coronal tem rows cortes", planeSliceCount(mprVolume, "coronal") === 6);
+check("sagital tem columns cortes", planeSliceCount(mprVolume, "sagital") === 8);
+
+console.log("\n-- aspecto em Z (a correcao que evita o MPR achatado) --");
+near("zAspect = 2mm / 0.5mm", zAspect(mprVolume), 4, 1e-9);
+check("axial nao distorce (aspecto 1)",
+  (() => {
+    const img = planeSliceToImageData(mprVolume, "axial", 0, 4000, 500, 2);
+    return img.width === 16 && img.height === 12;
+  })(),
+  "16x12 = 8*2 x 6*2");
+check("coronal corrige o eixo vertical por zAspect",
+  (() => {
+    const img = planeSliceToImageData(mprVolume, "coronal", 0, 4000, 500, 2);
+    return img.width === 16 && img.height === 32;
+  })(),
+  "16x32 = 8*2 x (4*2*4)");
+check("sagital corrige o eixo vertical por zAspect",
+  (() => {
+    const img = planeSliceToImageData(mprVolume, "sagital", 0, 4000, 500, 2);
+    return img.width === 12 && img.height === 32;
+  })(),
+  "12x32 = 6*2 x (4*2*4)");
+check("zAspect sem pixelSpacing nao quebra", zAspect({ ...mprVolume, pixelSpacing: null }) === 1);
+
+console.log("\n-- aspect por plano: fonte unica entre desenho e cursor --");
+// Regressao de um bug real: o canvas calculava `scale` com zAspect direto
+// enquanto o render usava aspecto 1 no axial. O `scale` do axial saia
+// dividido por 4 e a imagem encolhia para um quarto do tamanho, sem erro
+// nenhum na tela -- so o MPR ficava errado. `planeAspect` elimina a
+// duplicacao que permitiu a divergencia.
+check("axial: aspecto 1", planeAspect(mprVolume, "axial") === 1, `= ${planeAspect(mprVolume, "axial")}`);
+near("coronal: aspecto = zAspect", planeAspect(mprVolume, "coronal"), 4, 1e-9);
+near("sagittal: aspecto = zAspect", planeAspect(mprVolume, "sagittal"), 4, 1e-9);
+check("sem pixelSpacing o aspecto cai para 1",
+  planeAspect({ ...mprVolume, pixelSpacing: null }, "coronal") === 1);
+
+// O `scale` do canvas sai de max(columns, rows*aspect). A imagem precisa ter
+// exatamente essa proporcao, senao o cursor aponta para fora da figura.
+for (const plane of ["axial", "coronal", "sagittal"]) {
+  const { columns, rows } = planeDimensions(mprVolume, plane);
+  const aspect = planeAspect(mprVolume, plane);
+  const img = planeSliceToImageData(mprVolume, plane, 0, 4000, 500, 3);
+  const largura = columns * 3;
+  const altura = Math.round(rows * 3 * aspect);
+  check(`${plane}: imagem ${largura}x${altura} (columns*3 x rows*3*aspect)`,
+    img.width === largura && img.height === altura, `veio ${img.width}x${img.height}`);
+}
+
+console.log("\n-- voxelFromPlane / planeFromVoxel sao inversas --");
+for (const plane of ["axial", "coronal", "sagital"]) {
+  let ok = true;
+  for (let i = 0; i < planeSliceCount(mprVolume, plane); i++) {
+    const { columns, rows } = planeDimensions(mprVolume, plane);
+    for (let u = 0; u < columns; u++) {
+      for (let v = 0; v < rows; v++) {
+        const vox = voxelFromPlane(plane, i, u, v);
+        const back = planeFromVoxel(plane, vox.x, vox.y, vox.z);
+        if (back.index !== i || back.u !== u || back.v !== v) ok = false;
+      }
+    }
+  }
+  check(`round-trip em ${plane}`, ok);
+}
+
+console.log("\n-- cada plano le o voxel certo --");
+// voxel(3,2,1) = 100*1 + 10*2 + 3 = 123
+check("axial fixo z=1, u=x=3, v=y=2", planeHuAt(mprVolume, "axial", 1, 3, 2) === 123,
+  `= ${planeHuAt(mprVolume, "axial", 1, 3, 2)}`);
+// coronal fixo y=2, u=x=3, v=z=1
+check("coronal fixo y=2, u=x=3, v=z=1", planeHuAt(mprVolume, "coronal", 2, 3, 1) === 123,
+  `= ${planeHuAt(mprVolume, "coronal", 2, 3, 1)}`);
+// sagital fixo x=3, u=y=2, v=z=1
+check("sagital fixo x=3, u=y=2, v=z=1", planeHuAt(mprVolume, "sagital", 3, 2, 1) === 123,
+  `= ${planeHuAt(mprVolume, "sagital", 3, 2, 1)}`);
+
+console.log("\n-- os tres planos nao sao a mesma imagem --");
+{
+  // Janela fina: com ww 4000 os valores 113 e 123 arredondam para o mesmo
+  // cinza e a comparacao fica cega. ww 200 separa 10 HU em ~13 niveis.
+  const WW = 200;
+  const WC = 150;
+  const grayOf = (img, x, y) => img.data[(y * img.width + x) * 4];
+  const a = planeSliceToImageData(mprVolume, "axial", 1, WW, WC, 1);
+  const c = planeSliceToImageData(mprVolume, "coronal", 1, WW, WC, 1);
+  const s = planeSliceToImageData(mprVolume, "sagital", 1, WW, WC, 1);
+
+  // No mesmo (u,v)=(3,1) e mesmo indice 1:
+  //   axial   -> x=3, y=1, z=1 -> 113
+  //   coronal -> x=3, y=1, z=1 -> 113 (coincide por construcao)
+  //   sagital -> x=1, y=3, z=1 -> 131 (permuta x/y)
+  check("axial le 113 em (1,3,1)", planeHuAt(mprVolume, "axial", 1, 3, 1) === 113,
+    `= ${planeHuAt(mprVolume, "axial", 1, 3, 1)}`);
+  check("sagital le 131 em (1,3,1)", planeHuAt(mprVolume, "sagital", 1, 3, 1) === 131,
+    `= ${planeHuAt(mprVolume, "sagital", 1, 3, 1)}`);
+
+  const va = grayOf(a, 3, 1);
+  const vc = grayOf(c, 3, 1 * 4); // v=1 => linha 1*aspect(4)
+  const vs = grayOf(s, 3, 1 * 4);
+  check("render axial = 113", va === Math.round(((113 - 50) / WW) * 255), `= ${va}`);
+  check("render coronal = 113", vc === Math.round(((113 - 50) / WW) * 255), `= ${vc}`);
+  check("render sagital = 131", vs === Math.round(((131 - 50) / WW) * 255), `= ${vs}`);
+  check("axial == coronal nesse ponto", va === vc, `${va} vs ${vc}`);
+  check("sagital difere dos outros", vs !== va && vs !== vc, `${vs} vs ${va}/${vc}`);
+
+  // E o conteudo geral das tres imagens tambem difere.
+  const signature = (img) => {
+    let sum = 0;
+    for (let i = 0; i < img.data.length; i += 4) sum += img.data[i];
+    return sum;
+  };
+  check("soma de cinzas coronal != sagital", signature(c) !== signature(s),
+    `${signature(c)} vs ${signature(s)}`);
+}
+
+console.log("\n-- voxelSizeMm --");
+const mm = voxelSizeMm(mprVolume);
+check("x/y/z em mm", mm.x === 0.5 && mm.y === 0.5 && mm.z === 2, JSON.stringify(mm));
+check("z usa sliceSpacing, nao pixelSpacing", mm.z === 2, "o bug antigo devolvia 0.5");
+
 console.log(`\n${pass} passaram, ${fail} falharam`);
 process.exit(fail === 0 ? 0 : 1);

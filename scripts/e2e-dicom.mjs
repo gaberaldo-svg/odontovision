@@ -1106,6 +1106,217 @@ try {
       returnByValue: true,
     })).result.value === true);
 
+  // --- anotacao de texto ---
+  // Digita o rotulo NA SIDEBAR e clica no canvas. O campo e a fonte da verdade:
+  // o que o usuario digitar e o que fica amarrado ao ponto.
+  console.log("\n-- anotacao: escrever e clicar amarra um rotulo ao ponto --");
+  const lerAnotacoes = async () => {
+    const { result } = await cdp.send("Runtime.evaluate", {
+      expression: `(() => [...document.querySelectorAll('[data-annotation]')].map(el => ({
+        texto: el.dataset.annotationText,
+        plano: el.dataset.annotationPlane,
+        corte: Number(el.dataset.annotationSlice),
+        u: Number(el.dataset.annotationU),
+        v: Number(el.dataset.annotationV),
+        visivel: el.textContent.trim(),
+      })))()`,
+      returnByValue: true,
+    });
+    return result.value ?? [];
+  };
+  const lerRotulosNoCanvas = async () => {
+    const { result } = await cdp.send("Runtime.evaluate", {
+      expression: `(() => {
+        const out = {};
+        for (const el of document.querySelectorAll('[data-viewport]')) {
+          out[el.dataset.viewport] = Number(el.dataset.annotations);
+        }
+        return out;
+      })()`,
+      returnByValue: true,
+    });
+    return result.value ?? {};
+  };
+  const temAviso = async () => (await cdp.send("Runtime.evaluate", {
+    expression: `!!document.querySelector('[data-annotation-hint]')`,
+    returnByValue: true,
+  })).result.value;
+
+  // Assigning .value direto NAO dispara o onChange do React: precisa do setter
+  // nativo do prototype, senao o teste "passa" sem o store ter visto nada.
+  // Devolve o valor que o campo ficou, para o teste conferir o efeito.
+  const digitarRotulo = async (texto) => {
+    await cdp.send("Runtime.evaluate", {
+      expression: `(() => {
+        const el = document.querySelector('[data-annotation-input]');
+        el.focus();
+        const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+        setter.call(el, ${JSON.stringify(texto)});
+        el.dispatchEvent(new Event('input', { bubbles: true }));
+      })()`,
+    });
+    await sleep(200);
+    return (await cdp.send("Runtime.evaluate", {
+      expression: `(document.querySelector('[data-annotation-input]') || {}).value ?? null`,
+      returnByValue: true,
+    })).result.value;
+  };
+
+  // O corte de referencia: os testes de regua e de angulo mexeram em z ao
+  // clicar no coronal, e o axial pode ter ficado em outro corte. Sem voltar
+  // aqui, cada anotacao nasceria num corte diferente e nenhuma contagem bateria.
+  await cliqueNoVoxel("Coronal", 10, corteAxial);
+  await apertarEsc();
+  const corteDasAnotacoes = (await lerViewports()).Axial?.valor;
+  check("axial voltou ao corte de referencia", corteDasAnotacoes === corteAxial,
+    `${corteDasAnotacoes} (esperado ${corteAxial})`);
+
+  await realClick('[aria-label="Anotacao"]');
+  // O hint aparece so com a tool ativa E o campo vazio: e por isso que o
+  // usuario descobre antes de clicar, e nao depois.
+  check("aviso aparece com o campo vazio e a tool ativa", (await temAviso()) === true);
+
+  await digitarRotulo("Nucleo pulposo");
+  check("aviso some assim que ha texto", (await temAviso()) === false);
+
+  await cliqueNoVoxel("Axial", 40, 34);
+  const anotacoes = await lerAnotacoes();
+  check("um clique cria uma anotacao", anotacoes.length === 1, `n=${anotacoes.length}`);
+  check("texto do campo e o rotulo", anotacoes[0]?.texto === "Nucleo pulposo",
+    JSON.stringify(anotacoes[0]?.texto));
+  check("anotacao no plano e corte do clique",
+    anotacoes[0]?.plano === "axial" && anotacoes[0]?.corte === corteDasAnotacoes,
+    `${anotacoes[0]?.plano} ${anotacoes[0]?.corte}`);
+  check("anotacao desenhada no axial", (await lerRotulosNoCanvas()).Axial === 1,
+    JSON.stringify(await lerRotulosNoCanvas()));
+  check("nada desenhado nos outros planos",
+    (await lerRotulosNoCanvas()).Coronal === 0 && (await lerRotulosNoCanvas()).Sagital === 0);
+  check("sidebar mostra o rotulo", (anotacoes[0]?.visivel ?? "").includes("Nucleo pulposo"),
+    anotacoes[0]?.visivel ?? "");
+
+  // O texto continua no campo: anotar duas vezes seguidas e o caso comum
+  // ("canal" e "nervo" no mesmo corte) e nao deve exigir redigitar.
+  await digitarRotulo("Canal radicular");
+  await cliqueNoVoxel("Axial", 22, 20);
+  const duas = await lerAnotacoes();
+  check("segunda anotacao com outro texto", duas.length === 2, `n=${duas.length}`);
+  check("as duas no mesmo axial", duas.every((a) => a.plano === "axial" && a.corte === corteDasAnotacoes),
+    duas.map((a) => `${a.texto}@${a.plano}${a.corte}`).join(" "));
+  check("dois rotulos desenhados", (await lerRotulosNoCanvas()).Axial === 2,
+    JSON.stringify(await lerRotulosNoCanvas()));
+
+  // Texto longo e cortado com reticencias, e o cortado e o que fica na lista
+  // E no canvas: sao a mesma string, nunca uma mais longa que a outra.
+  await digitarRotulo("Alveolo mandibular direito setor posterior regiao muito longa mesmo");
+  await cliqueNoVoxel("Axial", 12, 12);
+  const cortada = (await lerAnotacoes()).at(-1);
+  check("rotulo longo cortado no limite",
+    cortada?.texto.length === 60 && cortada?.texto.endsWith("\u2026"),
+    `len=${cortada?.texto.length} fim=${JSON.stringify(cortada?.texto.slice(-6))}`);
+  check("o rotulo cortado e o mesmo na lista",
+    (cortada?.visivel ?? "").includes(cortada?.texto ?? "\u0000"),
+    (cortada?.visivel ?? "").slice(0, 90));
+
+  // Trocar de corte esconde o rotulo, como com a regua: "Mandibula" no corte 20
+  // nao descreve o corte 28.
+  // Sai da tool Anotacao antes de navegar: com ela ativa, CADA clique no canvas
+  // cria um rotulo, e os cliques de navegacao virariam anotacoes de brinde.
+  // (Foi assim que este teste falhou a primeira vez.)
+  console.log("\n-- anotacao tambem pertence ao plano e ao corte --");
+  await realClick('[aria-label="Janela/Contraste"]');
+  await cliqueNoVoxel("Coronal", 10, (corteDasAnotacoes + 8) % 32);
+  check("axial mudou de corte e escondeu os rotulos",
+    (await lerRotulosNoCanvas()).Axial === 0, JSON.stringify(await lerRotulosNoCanvas()));
+  check("as anotacoes continuam na lista", (await lerAnotacoes()).length === 3,
+    `n=${(await lerAnotacoes()).length}`);
+  await cliqueNoVoxel("Coronal", 10, corteDasAnotacoes);
+
+  // Anotacao em outro plano: a de coronal tem de aparecer so la.
+  await realClick('[aria-label="Anotacao"]');
+  await digitarRotulo("Sinfise mandibular");
+  await cliqueNoVoxel("Coronal", 30, 14);
+  check("anotacao no coronal", (await lerAnotacoes()).at(-1)?.plano === "coronal",
+    (await lerAnotacoes()).at(-1)?.plano ?? "");
+  // Volta ao axial: o clique no coronal move z, entao o axial ficou em outro
+  // corte e os tres rotulos de la sumiram. Isso e o filtro por corte
+  // funcionando, e o E2E precisa voltar para conferir a contagem.
+  await realClick('[aria-label="Janela/Contraste"]');
+  await cliqueNoVoxel("Coronal", 10, corteDasAnotacoes);
+  const porPlano = await lerRotulosNoCanvas();
+  check("anotacao do coronal so aparece no coronal", porPlano.Coronal === 1,
+    JSON.stringify(porPlano));
+  check("os tres rotulos do axial voltaram com o corte", porPlano.Axial === 3,
+    JSON.stringify(porPlano));
+  check("sagital nunca mostra rotulo de outro plano", porPlano.Sagital === 0,
+    JSON.stringify(porPlano));
+  // Campo vazio: o clique nao cria nada. E o mesmo `if` do store, entao o
+  // caminho do clique e o do Enter nao podem divergir.
+  await realClick('[aria-label="Anotacao"]');
+  await digitarRotulo("   ");
+  await cliqueNoVoxel("Axial", 18, 44);
+  check("campo so com espacos nao cria anotacao", (await lerAnotacoes()).length === 4,
+    `n=${(await lerAnotacoes()).length}`);
+  check("e o aviso reaparece", (await temAviso()) === true);
+
+  // Remover e limpar.
+  console.log("\n-- remover e limpar anotacoes --");
+  const removerRotulo = await realClick('[aria-label^="Remover anotacao"]');
+  check("botao de remover anotacao clicado", !removerRotulo.erro, removerRotulo.erro ?? "");
+  const aposRemover = await lerAnotacoes();
+  check("restou uma a menos", aposRemover.length === 3, `n=${aposRemover.length}`);
+
+  // O texto do campo e rascunho, nao resultado: limpar a lista nao pode
+  // apagar o que o usuario ja escreveu. Sai da tool antes, porque com ela ativa
+  // o proximo clique no canvas viraria anotacao.
+  const textoAntes = await digitarRotulo("Anotacao preservada");
+  check("campo aceita o rascunho", textoAntes === "Anotacao preservada",
+    JSON.stringify(textoAntes));
+  await realClick('[aria-label="Janela/Contraste"]');
+  // Foto do estado ANTES do "limpar": e o que prova que ele nao mexeu em nada
+  // alem da lista de anotacoes.
+  const antesDeLimpar = await lerMedicoes();
+  // Alvo por aria-label, nao por texto. Do texto "limpar" existem TRES botoes
+  // na tela: "limpar" (anotacoes), "limpar todas" (medicoes) e o "Limpar" do
+  // topo, que chama clearExam e desmonta a sidebar inteira -- o que zera a
+  // lista de medicoes e o relatorio junto, sem nenhum erro visivel. Era
+  // exatamente o que o E2E estava fazendo quando comecou a falhar em cascata.
+  const limparAnots = await realClick('[aria-label="Limpar anotacoes"]');
+  check("botao de limpar anotacoes clicado", !limparAnots.erro, limparAnots.erro ?? "");
+  check("a sidebar continua montada depois de limpar",
+    (await cdp.send("Runtime.evaluate", {
+      expression: `!!document.querySelector('[data-annotation-input]')`,
+      returnByValue: true,
+    })).result.value === true);
+  check("a lista de medicoes nao foi tocada",
+    (await lerMedicoes()).length === antesDeLimpar.length,
+    `${antesDeLimpar.length} -> ${(await lerMedicoes()).length}`);
+  check("lista de anotacoes vazia", (await lerAnotacoes()).length === 0);
+  check("nenhum rotulo desenhado",
+    Object.values(await lerRotulosNoCanvas()).every((n) => n === 0),
+    JSON.stringify(await lerRotulosNoCanvas()));
+  // A prova de que o rascunho sobrevive: o campo e controlado pelo estado, entao
+  // o valor continua na tela sem precisar redigitar. Se `limpar` tivesse
+  // chamado `setAnnotationText("")`, isto viraria string vazia.
+  const textoAposLimpar = (await cdp.send("Runtime.evaluate", {
+    expression: `(document.querySelector('[data-annotation-input]') || {}).value ?? null`,
+    returnByValue: true,
+  })).result.value;
+  check("o texto do campo sobrevive ao limpar", textoAposLimpar === textoAntes,
+    `antes=${JSON.stringify(textoAntes)} depois=${JSON.stringify(textoAposLimpar)}`);
+
+  // As tres medicoes do bloco de angulo tem de continuar la: "limpar" e das
+  // ANOTACOES, e um botao que levasse as medicoes junto seria perda de
+  // trabalho sem aviso.
+  check("as 3 medicoes do bloco de angulo sobreviveram a limpar anotacoes",
+    antesDeLimpar.length === 3 && antesDeLimpar.every((m) => m.kind === "angle"),
+    `n=${antesDeLimpar.length} kinds=${antesDeLimpar.map((m) => m.kind).join(" ")}`);
+  check("anotacoes nao entram no relatorio de medicoes",
+    antesDeLimpar.every((m) => m.kind !== "text"),
+    antesDeLimpar.map((m) => m.kind).join(" "));
+  check("relatorio ainda conta as medicoes",
+    (await lerRelatorio())?.texto.includes(`Total: ${antesDeLimpar.length}`),
+    (await lerRelatorio())?.texto.split("\n").find((l) => l.startsWith("Total:")) ?? "");
+
   // Esvaziar a lista esvazia o relatorio tambem: as duas coisas andam juntas.
   await realClick("button", "limpar todas");
   const relVazio = await lerRelatorio();

@@ -49,7 +49,9 @@ const measureDraft = useViewerStore((state) => state.measureDraft);
   const anglePoints = useViewerStore((state) => state.anglePoints);
   const addMeasurement = useViewerStore((state) => state.addMeasurement);
   const addAnglePoint = useViewerStore((state) => state.addAnglePoint);
+  const addAnnotation = useViewerStore((state) => state.addAnnotation);
   const cancelMeasureDraft = useViewerStore((state) => state.cancelMeasureDraft);
+  const annotations = useViewerStore((state) => state.annotations);
 
   const plane = PLANE[viewport];
   const currentSlice = slices[viewport] || 0;
@@ -70,6 +72,7 @@ const measureDraft = useViewerStore((state) => state.measureDraft);
 
   const caliper = activeTool === "Caliper";
   const angleTool = activeTool === "Angle";
+  const textTool = activeTool === "Text";
   const measuring = caliper || angleTool;
 
   // Onde o ponteiro esta, mas so enquanto ha medida em andamento: fora disso
@@ -91,6 +94,13 @@ const measureDraft = useViewerStore((state) => state.measureDraft);
   const angles = React.useMemo(
     () => rulers.filter((m): m is AngleMeasurement => m.kind === "angle"),
     [rulers],
+  );
+
+  // Mesmo filtro das regras: um rotulo de "Mandibula" pertence ao corte onde foi
+  // escrito. Sem isto o texto do canal aparece em todos os 32 cortes.
+  const anotacoes = React.useMemo(
+    () => (volume ? annotations.filter((a) => a.plane === plane && a.slice === currentSlice) : []),
+    [annotations, plane, currentSlice, volume],
   );
 
   const draft = React.useMemo<MeasureDraft | null>(() => {
@@ -144,6 +154,7 @@ const measureDraft = useViewerStore((state) => state.measureDraft);
 
   const handleMeasure = (u: number, v: number) => {
     if (angleTool) addAnglePoint(plane, currentSlice, u, v);
+    else if (textTool) addAnnotation(plane, currentSlice, u, v);
     else addMeasurement(plane, currentSlice, u, v);
   };
 
@@ -154,6 +165,7 @@ const measureDraft = useViewerStore((state) => state.measureDraft);
       // Quantas regras estao DESENHADAS aqui: e o filtro por plano e por corte
       // virando numero observavel, sem precisar ler o canvas.
       data-rulers={rulers.length}
+      data-annotations={anotacoes.length}
       className="relative flex flex-col flex-1 min-w-0 overflow-hidden rounded-md border border-border bg-viewport aspect-square"
     >
       {!isExamLoaded ? (
@@ -187,8 +199,10 @@ const measureDraft = useViewerStore((state) => state.measureDraft);
             measuring={measuring}
             caliper={caliper}
             angle={angleTool}
+            text={textTool}
             distances={distances}
             angles={angles}
+            annotations={anotacoes}
             draft={draft}
             angleDraft={angleDraft}
             onCrosshairMove={handleCrosshairMove}

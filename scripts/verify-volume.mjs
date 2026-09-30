@@ -41,6 +41,8 @@ const { huAt, huToGray, autoWindow, storedRange, sliceToImageData, voxelIndex, p
   await import("../lib/dicom/volume.ts");
 const { buildMeasurement, buildAngleMeasurement } = await import("../lib/dicom/measure.ts");
 const { buildReport } = await import("../lib/dicom/report.ts");
+const { buildAnnotation, sanitizeAnnotationText, MAX_ANNOTATION_CHARS } =
+  await import("../lib/dicom/annotate.ts");
 
 // --- monta o volume a partir da fixture, como o worker faz ---
 const byteArray = new Uint8Array(readFileSync(SAMPLE));
@@ -567,6 +569,62 @@ check("sem metadados, tudo vira '-'", buildReport([], null).texto.includes("Paci
   buildReport([], null).texto.split("\n")[1]);
 check("texto e CSV terminam com quebra de linha", rel.texto.endsWith("\n") && rel.csv.endsWith("\n"));
 check("nenhuma celula de CSV quebra linha", !rel.csv.split("\n").slice(1).some((l) => l.includes("\r")));
+
+console.log("\n-- sanitizeAnnotationText --");
+check("texto normal passa direto", sanitizeAnnotationText("Mandibula"), "Mandibula");
+check("espa\u00e7os das pontas somem", sanitizeAnnotationText("  Mandibula  "), "Mandibula");
+// O canvas escreve o rotulo numa linha s\u00f3: um \n solto empurraria o resto
+// para fora da imagem sem nenhum aviso.
+check("quebra de linha vira espaco", sanitizeAnnotationText("Canal\nradicular"), "Canal radicular");
+check("espacos internos colapsam", sanitizeAnnotationText("canal   do   nervo"), "canal do nervo");
+check("tab vira espaco", sanitizeAnnotationText("a\tb"), "a b");
+check("caractere de controle some", sanitizeAnnotationText("a\u0007b"), "a b");
+check("so espacos = vazio", sanitizeAnnotationText("   \n  ") === "", JSON.stringify(sanitizeAnnotationText("   \n  ")));
+check("vazio = vazio", sanitizeAnnotationText("") === "", "");
+// O limite nao e arbitrario: o rotulo e desenhado sobre a imagem.
+check("texto curto nao e cortado", sanitizeAnnotationText("x".repeat(MAX_ANNOTATION_CHARS)).length, MAX_ANNOTATION_CHARS);
+const longo = sanitizeAnnotationText("y".repeat(200));
+check("texto longo e cortado no limite", longo.length, MAX_ANNOTATION_CHARS);
+check("texto cortado se declara cortado", longo.endsWith("\u2026"), longo.slice(-4));
+// "yyy " + reticencias: se sobrar espaco antes do corte, o rotulo parece ter
+// um buraco no fim.
+check("nada de espaco antes da reticencia", longo.includes(" \u2026") === false);
+check("corte em texto com espacos tambem nao deixa buraco",
+  sanitizeAnnotationText("ab ".repeat(40)).includes(" \u2026") === false,
+  sanitizeAnnotationText("ab ".repeat(40)).slice(-6));
+
+console.log("\n-- buildAnnotation --");
+const anot = buildAnnotation(mprVolume, "axial", 1, 3, 2, "  Nucleo pulposo  ", 1);
+check("axial aceita", anot.ok === true);
+check("texto limpo no rotulo", anot.ok && anot.annotation.text === "Nucleo pulposo",
+  anot.ok ? JSON.stringify(anot.annotation.text) : "recusada");
+check("guarda o ponto e o corte", anot.ok
+  && anot.annotation.u === 3 && anot.annotation.v === 2 && anot.annotation.slice === 1);
+check("guarda o plano", anot.ok && anot.annotation.plane === "axial");
+// Texto vazio e recusado, e nao aceito como rotulo invisivel: o usuario
+// ficaria sem nenhuma pista de onde a anotacao foi parar.
+check("texto vazio e recusado",
+  buildAnnotation(mprVolume, "axial", 1, 3, 2, "   ", 1).error === "texto-vazio");
+check("texto vazio nao gasta id nem cria", (() => {
+  const r = buildAnnotation(mprVolume, "axial", 1, 3, 2, "", 1);
+  return r.ok === false && !("annotation" in r);
+})());
+// As mesmas regras de ponto da regua: dentro da matriz, inteiro, sem negativo.
+check("v que so cabe no axial e recusado",
+  buildAnnotation(mprVolume, "coronal", 0, 3, 5, "x", 1).error === "fora-do-plano");
+check("ponto fracionario e recusado",
+  buildAnnotation(mprVolume, "axial", 1, 1.5, 2, "x", 1).error === "fora-do-plano");
+check("ponto negativo e recusado",
+  buildAnnotation(mprVolume, "axial", 1, -1, 2, "x", 1).error === "fora-do-plano");
+// O texto e cortado ANTES de virar anotacao: a lista e o canvas mostram a
+// mesma string, nunca uma mais longa que a outra.
+check("rotulo longo ja vem cortado no store",
+  (() => { const r = buildAnnotation(mprVolume, "axial", 1, 1, 1, "z".repeat(300), 1); return r.ok && r.annotation.text.length === MAX_ANNOTATION_CHARS; })());
+// Matriz vazia (0 colunas): o ponto (0,0) esta fora. Uma anotacao "criada" com
+// columns=0 nao teria onde ser desenhada.
+check("volume vazio recusa o ponto", buildAnnotation(
+  { columns: 0, rows: 0, slices: 0, values: new Int16Array(0), rescaleSlope: 1, rescaleIntercept: 0, sliceSpacing: null, pixelSpacing: null },
+  "axial", 0, 0, 0, "x", 1).error, "fora-do-plano");
 
 console.log(`\n${pass} passaram, ${fail} falharam`);
 process.exit(fail === 0 ? 0 : 1);

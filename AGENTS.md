@@ -39,8 +39,10 @@ Isso impõe duas regras em `lib/`:
 - **Fase 5a**: HU das duas pontas da régua e ΔHU com sinal.
 - **Fase 5b**: ângulo de três pontos (dois cliques marcam as pontas, o terceiro
   fecha), em graus e com o HU dos três pontos.
-- **Fase 5c** (estamos aqui): relatório das medições em texto e CSV, com
-  download e cópia. Ainda não existe anotação de texto.
+- **Fase 5c**: relatório das medições em texto e CSV, com download e cópia.
+- **Fase 5d** (estamos aqui): anotação de texto, um rótulo livre amarrado a um
+  ponto de um plano/corte, com lista, remoção e limpeza. Anotações **não** entram
+  no relatório de medições: não têm valor calculado para somar.
 
 Só avance de fase com ordem explícita do usuário.
 
@@ -103,6 +105,26 @@ Estas custaram bug real; todas já têm teste.
 - O CSV não é atributo de DOM: o botão monta um Blob. O unit test garante o
   CSV byte a byte e o E2E garante o texto renderizado — não há como ler o
   arquivo baixado de dentro da página, e fingir que há seria o teste-mentira.
+- **Anotação não é `kind: "text"` dentro de `Measurement`.** Aquela união é
+  para valores que o app calcula (mm, graus, HU) e que o relatório soma; uma
+  anotação não tem valor nenhum, e enfiá-la lá obrigaria canvas, sidebar e
+  relatório a tratar um caso sem medição. Ficou em `annotations`, separado.
+- **O texto do campo é rascunho, não resultado.** "limpar" tira a lista e o
+  botão, nunca o que o usuário digitou, e ele sobrevive à troca de tool e à
+  carga de outro exame. Texto vazio (ou só espaços) **não cria** anotação: uma
+  anotação sem texto é invisível no canvas e some da lista, e o usuário fica sem
+  pista de onde ela foi parar. O aviso aparece **antes** do clique, com a tool
+  ativa e o campo vazio.
+- **Com a tool Anotação ativa, todo clique no canvas cria um rótulo** — inclusive
+  os cliques de navegação. Saia da tool antes de navegar.
+- O texto é cortado em 60 caracteres **no store** (`sanitizeAnnotationText`), com
+  reticências e sem espaço antes delas. Lista e canvas mostram a mesma string
+  porque cortam no mesmo lugar; cortar na hora de desenhar faria os dois discordarem.
+- **Existem três botões "limpar" na tela**: `limpar` (anotações, na sidebar),
+  `limpar todas` (medições) e `Limpar` (topo, que chama `clearExam` e desmonta a
+  sidebar inteira). Clique por `aria-label`, nunca por texto — um `^limpar$` no
+  E2E acertou o botão do topo e zerou medições e relatório em cascata, sem erro
+  visível. Foi a causa de uma leva inteira de falhas.
 - **O canvas é quadrado; o que sobra é tarja.** O `aspect-square` do viewport
   resolve, e `imagemDoPlano` no `scripts/e2e-dicom.mjs` centraliza a imagem
   dentro dele. Nada de medir posição por fração da altura: converta
@@ -134,7 +156,7 @@ npm run sample           # gera a fixture de 1 corte em samples/
 npm run sample:series    # gera a série de 32 cortes + a variante multiframe
 npm run fetch:real       # baixa DICOMs REAIS de teste em samples/real/ (ver abaixo)
 npm run verify:sample    # valida a fixture de 1 corte (38 checks)
-npm run verify:volume    # valida HU/W-L/MPR/medicao/angulo/relatorio puros (155 checks)
+npm run verify:volume    # valida HU/W-L/MPR/medicao/angulo/relatorio/anotacao puros (179 checks)
 npm run verify:series    # monta a série real e confere voxel a voxel (50 checks)
 npm run e2e              # Chrome headless via CDP, porta 3210
 npm run verify           # tsc + build + sample + volume + series + e2e

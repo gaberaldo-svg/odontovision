@@ -3,6 +3,7 @@ import { ViewportType, Tool, Preset, ExamMetadata, MOCK_EXAM, MOCK_SLICE_COUNT }
 import type { DicomMeta, DicomVolume, Plane } from "@/lib/dicom/types";
 import { autoWindow } from "@/lib/dicom/volume";
 import { buildAngleMeasurement, buildMeasurement, type Measurement, type MeasureError } from "@/lib/dicom/measure";
+import { buildAnnotation, type Annotation } from "@/lib/dicom/annotate";
 
 /** Voxel apontado pelos tres viewports ao mesmo tempo. */
 export interface Crosshair {
@@ -53,6 +54,17 @@ interface ViewerState {
   /** Contador para os ids das regras; nunca reutiliza id apagado. */
   lastMeasureId: number;
 
+  /**
+   * Rotulos de texto amarrados a um ponto, por plano e por corte. Ficam fora de
+   * `measurements` de proposito: anotacao nao tem valor calculado, e o relatorio
+   * de medicoes nao teria o que somar.
+   */
+  annotations: Annotation[];
+  /** Texto a ser usado no proximo clique da tool Anotacao. */
+  annotationText: string;
+  /** Contador para os ids das anotacoes. */
+  lastAnnotationId: number;
+
   setActiveTool: (tool: Tool) => void;
   setPreset: (preset: Preset) => void;
   setWindowLevel: (ww: number, wc: number) => void;
@@ -73,6 +85,14 @@ interface ViewerState {
   removeMeasurement: (id: number) => void;
   clearMeasurements: () => void;
   cancelMeasureDraft: () => void;
+  /**
+   * Clique com a Anotacao ativa: amarra o texto do campo a este ponto. Com o
+   * campo vazio nao cria nada, e a sidebar avisa antes do clique.
+   */
+  addAnnotation: (plane: Plane, slice: number, u: number, v: number) => void;
+  setAnnotationText: (text: string) => void;
+  removeAnnotation: (id: number) => void;
+  clearAnnotations: () => void;
   toggleSidebar: () => void;
   loadDemoExam: () => void;
   /** Entra com o resultado real do worker de DICOM. */
@@ -106,6 +126,9 @@ const initialState = {
   anglePoints: [] as { u: number; v: number }[],
   lastMeasureError: null as MeasureError | null,
   lastMeasureId: 0,
+  annotations: [] as Annotation[],
+  annotationText: "",
+  lastAnnotationId: 0,
 };
 
 /** Converte os metadados DICOM no formato que a sidebar ja consome. */
@@ -239,6 +262,27 @@ export const useViewerStore = create<ViewerState>((set) => ({
     lastMeasureError: null,
   }),
 
+  // O texto do campo SOBREVIVE a troca de tool e ate ao "limpar": e rascunho do
+  // usuario, nao resultado. Perder "Mandibula" porque ele clicou em "limpar
+  // medicoes" seria perda de trabalho sem motivo.
+  addAnnotation: (plane, slice, u, v) => set((state) => {
+    const volume = state.volume;
+    if (!volume) return {};
+    const id = state.lastAnnotationId + 1;
+    const built = buildAnnotation(volume, plane, slice, u, v, state.annotationText, id);
+    // Texto vazio: nao cria nada e nao gasta id. A sidebar ja avisa antes.
+    if (!built.ok) return {};
+    return { annotations: [...state.annotations, built.annotation], lastAnnotationId: id };
+  }),
+
+  setAnnotationText: (text) => set({ annotationText: text }),
+
+  removeAnnotation: (id) => set((state) => ({
+    annotations: state.annotations.filter((a) => a.id !== id),
+  })),
+
+  clearAnnotations: () => set({ annotations: [] }),
+
   cancelMeasureDraft: () => set({ measureDraft: null, anglePoints: [], lastMeasureError: null }),
 
   toggleSidebar: () => set((state) => ({ isSidebarOpen: !state.isSidebarOpen })),
@@ -289,11 +333,13 @@ loadVolume: (meta, volume, series) => set((state) => {
       windowCenter,
       activePreset: null,
       // As regras pertencem ao volume anterior: as distancias em mm so valem
-      // para o espacamento do exame que as originou.
+      // para o espacamento do exame que as originou. O mesmo vale para os
+      // rotulos: "Mandibula" anotado no exame velho nao descreve o novo.
       measurements: [],
       measureDraft: null,
       anglePoints: [],
       lastMeasureError: null,
+      annotations: [],
       slices: {
         Axial: Math.floor((counts.Axial - 1) / 2),
         Coronal: Math.floor((counts.Coronal - 1) / 2),

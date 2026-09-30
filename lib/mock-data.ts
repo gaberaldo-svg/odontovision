@@ -1,5 +1,5 @@
 ﻿export type ViewportType = "Axial" | "Coronal" | "Sagital";
-export type Tool = "WindowLevel" | "Pan" | "Zoom" | "Caliper" | "Angle" | "ResetView";
+export type Tool = "WindowLevel" | "Pan" | "Zoom" | "Caliper" | "Angle" | "Text" | "ResetView";
 
 export interface Preset {
   id: string;
@@ -69,6 +69,7 @@ export const TOOL_LABELS: Record<Tool, string> = {
   Zoom: "Zoom",
   Caliper: "Regua",
   Angle: "Angulo",
+  Text: "Anotacao",
   ResetView: "Restaurar Visao",
 };
 
@@ -78,5 +79,6 @@ export const TOOL_DESCRIPTIONS: Record<Tool, string> = {
   Zoom: "Aproximar ou afastar a imagem",
   Caliper: "Medir distancias em mm",
   Angle: "Medir angulo em graus (3 pontos)",
+  Text: "Escrever um rotulo num ponto da imagem",
   ResetView: "Voltar a visualizacao inicial",
 };

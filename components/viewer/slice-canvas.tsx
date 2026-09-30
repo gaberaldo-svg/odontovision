@@ -8,6 +8,7 @@ import type {
   DistanceMeasurement,
   MeasureDraft,
 } from "@/lib/dicom/measure";
+import type { Annotation } from "@/lib/dicom/annotate";
 import { planeAspect, planeDimensions, planeSliceCount, planeSliceToImageData } from "@/lib/dicom/volume";
 import { formatDeg, formatHu, formatMm } from "@/lib/format";
 
@@ -29,10 +30,14 @@ export interface SliceCanvasProps {
   caliper: boolean;
   /** Tool Angulo ativa: fecha a medida no terceiro clique. */
   angle: boolean;
+  /** Tool Anotacao ativa: o clique amarra o texto do campo a este ponto. */
+  text: boolean;
   /** Regras de comprimento deste plano e deste corte. */
   distances: DistanceMeasurement[];
   /** Regras de angulo deste plano e deste corte. */
   angles: AngleMeasurement[];
+  /** Rotulos de texto deste plano e deste corte. */
+  annotations: Annotation[];
   /** Previa da regua em andamento: origem ate o ponteiro. Null quando nao ha. */
   draft: MeasureDraft | null;
   /** Previa do angulo em andamento. Null quando nao ha. */
@@ -65,11 +70,13 @@ export function SliceCanvas({
   crosshair,
   distances,
   angles,
+  annotations,
   draft,
   angleDraft,
   measuring,
   caliper,
   angle,
+  text,
   onCrosshairMove,
   onMeasure,
   onDraftCancel,
@@ -214,7 +221,17 @@ export function SliceCanvas({
       );
     }
 
-if (angleDraft) {
+    for (const a of annotations) {
+      drawAnnotation(
+        ctx,
+        { x: a.u * scale, y: a.v * aspect * scale },
+        a.text,
+        imgData.width,
+        imgData.height,
+      );
+    }
+
+    if (angleDraft) {
       // Com dois pontos o vertice ja esta marcado e o bracinho que falta vira
       // arco com o numero ao vivo; com menos disso so se liga o proximo
       // segmento, porque ainda nao existe angulo para desenhar.
@@ -264,6 +281,7 @@ if (angleDraft) {
     crosshair?.v,
     distances,
     angles,
+    annotations,
     draft,
     angleDraft,
     size.width,
@@ -311,8 +329,7 @@ if (angleDraft) {
     onCrosshairMove(voxel.u, voxel.v);
     // A regua nasce no pointerup, que e onde o codigo ja sabe se foi clique
     // ou arrasto. No pointerdown um arrasto deixaria a origem no lugar.
-    if (caliper) onMeasure(voxel.u, voxel.v);
-    else if (angle) onMeasure(voxel.u, voxel.v);
+    if (caliper || angle || text) onMeasure(voxel.u, voxel.v);
   };
 
   // Escape descarta o que estiver em andamento: a origem da regua ou os pontos
@@ -390,6 +407,39 @@ function drawCrosshair(
  * `dashed` marca a previa. O vertice e o ponto do meio porque e ali que a
  * leitura do software tambem marca.
  */
+/**
+ * Rotulo de texto: um ponto de ancoragem e o texto ao lado.
+ *
+ * O texto nao e desenhado no ponto, e ao lado dele: ancorado exatamente no
+ * ponto, o rotulo cobriria a estrutura que ele nomeia -- que e justamente o
+ * que o usuario quis marcar.
+ */
+function drawAnnotation(
+  ctx: CanvasRenderingContext2D,
+  p: { x: number; y: number },
+  text: string,
+  width: number,
+  height: number,
+) {
+  ctx.save();
+  // Anel, nao ponto cheio: um disco solido de 7 px esconderia a anatomia.
+  ctx.strokeStyle = "rgba(56, 189, 248, 1)";
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  ctx.arc(p.x, p.y, 6, 0, Math.PI * 2);
+  ctx.stroke();
+  // Traco ligando o anel ao texto, para o rotulo ficar ligado ao ponto mesmo
+  // deslocado.
+  ctx.beginPath();
+  ctx.moveTo(p.x + 5, p.y - 5);
+  ctx.lineTo(p.x + 11, p.y - 11);
+  ctx.stroke();
+
+  ctx.font = "11px ui-monospace, monospace";
+  drawTag(ctx, p.x + 11, p.y - 11, text, width, height);
+  ctx.restore();
+}
+
 function drawAngle(
   ctx: CanvasRenderingContext2D,
   a: { x: number; y: number },

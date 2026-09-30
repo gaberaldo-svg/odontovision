@@ -7,6 +7,8 @@ import {
   Search,
   Ruler,
   Triangle,
+  Type,
+
   RotateCcw,
   X,
   Upload,
@@ -36,6 +38,7 @@ const TOOLS: { id: Tool; icon: React.ElementType }[] = [
   { id: "Zoom", icon: Search },
   { id: "Caliper", icon: Ruler },
   { id: "Angle", icon: Triangle },
+  { id: "Text", icon: Type },
 ];
 
 export function TopBar() {

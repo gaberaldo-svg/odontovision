@@ -2,9 +2,10 @@
 
 import * as React from "react";
 import { useViewerStore } from "@/store/use-viewer-store";
-import { Copy, Download, FileScan, Lock, X } from "lucide-react";
+import { Copy, Download, FileScan, Lock, Tag, X } from "lucide-react";
 import type { MeasureError } from "@/lib/dicom/measure";
 import { buildReport } from "@/lib/dicom/report";
+import { MAX_ANNOTATION_CHARS } from "@/lib/dicom/annotate";
 import { formatDeg, formatDeltaHu, formatMm, PLANO_LABEL } from "@/lib/format";
 import { Separator } from "@/components/ui/separator";
 import { Button } from "@/components/ui/button";
@@ -27,6 +28,12 @@ export function Sidebar() {
     removeMeasurement,
     clearMeasurements,
     lastMeasureError,
+    annotations,
+    annotationText,
+    setAnnotationText,
+    removeAnnotation,
+    clearAnnotations,
+    activeTool,
   } = useViewerStore();
 
   const [copiado, setCopiado] = React.useState(false);
@@ -35,6 +42,34 @@ export function Sidebar() {
     () => buildReport(measurements, metadata),
     [measurements, metadata],
   );
+
+  /** Ponto 3D do crosshair,ja em (u,v) de cada plano. Ver addAnnotationAtCrosshair. */
+  const slices = useViewerStore((state) => state.slices);
+  const addAnnotation = useViewerStore((state) => state.addAnnotation);
+
+  /**
+   * Enter no campo de anotacao amarra o rotulo ao crosshair de cada plano.
+   *
+   * Os tres viewports compartilham um unico crosshair (e o MPR que garante
+   * isso), entao existe um unico ponto 3D. Traduzir para o plano de cada
+   * viewport e o mesmo `voxelFromPlane` que o clique usa, entao o rotulo
+   * criado pelo Enter e o criado pelo clique caem no mesmo lugar.
+   */
+  function addAnnotationAtCrosshair() {
+    if (annotationText.trim().length === 0) return;
+    for (const [viewport, plane] of [
+      ["Axial", "axial"], ["Coronal", "coronal"], ["Sagital", "sagittal"],
+    ] as const) {
+      const slice = slices[viewport];
+      // Um mesmo ponto 3D vira (u,v) diferente em cada plano; e o mapeamento
+      // do MPR, nao um chute.
+      const paraUV =
+        plane === "axial" ? { u: slices.Sagital, v: slices.Coronal }
+        : plane === "coronal" ? { u: slices.Sagital, v: slices.Axial }
+        : { u: slices.Coronal, v: slices.Axial };
+      addAnnotation(plane, slice, paraUV.u, paraUV.v);
+    }
+  }
 
   // Nome do arquivo pelo paciente e a data do exame: e o que o clinico procura
   // na pasta de downloads depois. Sem separador "/", que vira pasta no Windows.
@@ -257,6 +292,97 @@ export function Sidebar() {
                 <p className="text-[10px] text-destructive" data-measure-error="">
                   {ERRO_MEDIDA[lastMeasureError]}
                 </p>
+              )}
+            </div>
+
+            <Separator />
+
+            {/* Anotacoes: rotulo de texto amarrado a um ponto. */}
+            <div className="flex flex-col gap-2">
+              <div className="flex items-center justify-between">
+                <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                  Anotacoes
+                </h3>
+                {annotations.length > 0 && (
+                  <button
+                    type="button"
+                    aria-label="Limpar anotacoes"
+                    onClick={clearAnnotations}
+                    className="text-[10px] text-muted-foreground hover:text-foreground underline underline-offset-2"
+                  >
+                    limpar
+                  </button>
+                )}
+              </div>
+
+              {/* Campo nativo, nao <Input> do design system: nao existe
+                  components/ui/input.tsx neste projeto, e um input simples e o
+                  elemento certo para texto de uma linha. */}
+              <input
+                type="text"
+                value={annotationText}
+                onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
+                  setAnnotationText(e.target.value)
+                }
+                onKeyDown={(e: React.KeyboardEvent<HTMLInputElement>) => {
+                  // Enter marca a anotacao no crosshair atual, sem exigir
+                  // clique no canvas: quem esta digitando nao deve ter que
+                  // largar o campo e ir ate a imagem.
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    addAnnotationAtCrosshair();
+                  }
+                }}
+                placeholder="Escreva e clique na imagem"
+                aria-label="Texto da anotacao"
+                maxLength={MAX_ANNOTATION_CHARS}
+                className="h-7 w-full rounded border border-sidebar-border bg-background px-2 text-[11px] outline-none focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/50"
+                data-annotation-input=""
+              />
+
+              {activeTool === "Text" && annotationText.trim().length === 0 && (
+                <p className="text-[10px] text-muted-foreground" data-annotation-hint="">
+                  Escreva um texto antes de clicar: o rotulo precisa dizer alguma coisa.
+                </p>
+              )}
+
+              {annotations.length === 0 ? (
+                <p className="text-[10px] text-muted-foreground">
+                  Ative Anotacao, escreva o rotulo e clique no ponto que ele nomeia.
+                </p>
+              ) : (
+                <ul className="flex flex-col gap-1" data-annotation-list>
+                  {annotations.map((a) => (
+                    <li
+                      key={a.id}
+                      className="flex items-center justify-between gap-2 rounded border border-sidebar-border bg-background px-2 py-1.5"
+                      data-annotation=""
+                      data-annotation-plane={a.plane}
+                      data-annotation-slice={a.slice}
+                      data-annotation-u={a.u}
+                      data-annotation-v={a.v}
+                      data-annotation-text={a.text}
+                    >
+                      <span className="flex min-w-0 items-center gap-1.5">
+                        <Tag className="size-3 shrink-0 text-muted-foreground" />
+                        <span className="truncate text-[11px]" title={a.text}>
+                          {a.text}
+                        </span>
+                        <span className="shrink-0 font-mono text-[9px] text-muted-foreground/70">
+                          {PLANO_LABEL[a.plane]} {a.slice}
+                        </span>
+                      </span>
+                      <button
+                        type="button"
+                        aria-label={`Remover anotacao ${a.text}`}
+                        onClick={() => removeAnnotation(a.id)}
+                        className="shrink-0 text-muted-foreground hover:text-foreground"
+                      >
+                        <X className="size-3" />
+                      </button>
+                    </li>
+                  ))}
+                </ul>
               )}
             </div>
 

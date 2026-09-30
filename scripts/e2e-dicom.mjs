@@ -563,10 +563,12 @@ try {
   /**
    * Onde a imagem de verdade esta dentro do canvas.
    *
-   * O viewport NAO e quadrado -- o grid estica a altura, e o `aspect-square`
-   * perde para o stretch. A imagem entra centrada e sobra tarja preta nas duas
-   * pontas. Medir por fracao da ALTURA do canvas aponta para o vazio, que e o
-   * que fazia o coronal ler ar em todo lugar sem nenhum erro na tela.
+   * O canvas e quadrado (o `aspect-square` do viewport resolve), mas a imagem
+   * do plano entra centrada e sobra tarja preta nas duas pontas -- no coronal e
+   * no sagital a tarja e enorme, porque a matriz e baixa em Z (32 linhas) e
+   * alta em aspecto (4x). Medir por fracao da ALTURA do canvas aponta para o
+   * vazio, que e o que fazia o coronal ler ar em todo lugar sem nenhum erro na
+   * tela.
    */
   const imagemDoPlano = (plano, rect) => {
     const g = PLANOS[plano];
@@ -713,6 +715,159 @@ try {
   // imagem, um deles estaria desenhando o corte errado.
   check("os tres planos devolvem perfis diferentes",
     new Set(Object.values(perfisPorPlano)).size === 3);
+
+  // --- regua em mm ---
+  // A serie e 0,25 mm por voxel na imagem e 1,00 mm entre cortes. As medidas
+  // abaixo usam um 3-4-5 de voxels: 12 colunas = 3,00 mm e 16 linhas = 4,00 mm,
+  // o que fecha em 5,00 mm exatos em qualquer plano. Se um eixo trocar o
+  // espacamento, o resultado sai 3,16 mm ou 5,66 mm -- e o teste acusa.
+  console.log("\n-- regua: dois cliques viram uma medida em mm --");
+
+  /** Lista da sidebar: as medicoes confirmadas, como o usuario ve. */
+  const lerMedicoes = async () => {
+    const { result } = await cdp.send("Runtime.evaluate", {
+      expression: `(() => [...document.querySelectorAll('[data-measure]')].map(el => ({
+        mm: Number(el.dataset.mm),
+        plano: el.dataset.measurePlane,
+        corte: Number(el.dataset.measureSlice),
+        texto: el.textContent.trim(),
+      })))()`,
+      returnByValue: true,
+    });
+    return result.value ?? [];
+  };
+
+  /** Quantas regras cada viewport esta desenhando. */
+  const lerRegras = async () => {
+    const { result } = await cdp.send("Runtime.evaluate", {
+      expression: `(() => {
+        const out = {};
+        for (const el of document.querySelectorAll('[data-viewport]')) {
+          out[el.dataset.viewport] = Number(el.dataset.rulers);
+        }
+        return out;
+      })()`,
+      returnByValue: true,
+    });
+    return result.value ?? {};
+  };
+
+  const lerErroMedida = async () => {
+    const { result } = await cdp.send("Runtime.evaluate", {
+      expression: `document.querySelector('[data-measure-error]')?.textContent?.trim() ?? null`,
+      returnByValue: true,
+    });
+    return result.value;
+  };
+
+  const apertarEsc = async () => {
+    await cdp.send("Input.dispatchKeyEvent", {
+      type: "rawKeyDown", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27, nativeVirtualKeyCode: 27,
+    });
+    await cdp.send("Input.dispatchKeyEvent", {
+      type: "keyUp", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27, nativeVirtualKeyCode: 27,
+    });
+    await sleep(250);
+  };
+
+  const btnRegua = await realClick('[aria-label="Regua"]');
+  check("botao da Regua clicado", !btnRegua.erro, btnRegua.erro ?? "");
+
+  const corteAxial = (await lerViewports()).Axial?.valor;
+  // axial: 12 colunas de u e 16 linhas de v, ambos a 0,25 mm.
+  await cliqueNoVoxel("Axial", 10, 10);
+  check("primeiro clique nao fecha medida", (await lerMedicoes()).length === 0);
+  await cliqueNoVoxel("Axial", 22, 26);
+  const medidas = await lerMedicoes();
+  check("segundo clique fecha uma medida", medidas.length === 1, `n=${medidas.length}`);
+  check("distancia axial = 5,00 mm", medidas[0]?.mm === 5, `mm=${medidas[0]?.mm}`);
+  check("medida pertence ao plano e ao corte do clique",
+    medidas[0]?.plano === "axial" && medidas[0]?.corte === corteAxial,
+    `${medidas[0]?.plano} ${medidas[0]?.corte} (corte ${corteAxial})`);
+  check("sidebar mostra a medida com 2 casas", /5\.00 mm/.test(medidas[0]?.texto ?? ""),
+    medidas[0]?.texto ?? "");
+  check("regua desenhada no axial", (await lerRegras()).Axial === 1,
+    JSON.stringify(await lerRegras()));
+  check("nada desenhado nos outros planos",
+    (await lerRegras()).Coronal === 0 && (await lerRegras()).Sagital === 0);
+
+  // --- a medida e do plano e do corte onde foi feita ---
+  // Clicar no coronal mexe em X e Z: o axial vai para outro corte e deve
+  // esconder a regua. A lista continua com o mesmo item -- nada foi perdido.
+  console.log("\n-- a medida so aparece no plano e no corte de origem --");
+  const outroCorte = (corteAxial + 8) % 32;
+  await cliqueNoVoxel("Coronal", 10, outroCorte);
+  const regrasNoOutroCorte = await lerRegras();
+  check("axial mudou de corte e escondeu a regua",
+    regrasNoOutroCorte.Axial === 0, JSON.stringify(regrasNoOutroCorte));
+  check("coronal nunca mostra a regua do axial", regrasNoOutroCorte.Coronal === 0);
+  check("a medida continua na lista", (await lerMedicoes()).length === 1);
+  // O clique no coronal abriu uma ancora; Escape a descarta para o proximo teste.
+  await apertarEsc();
+
+  // Volta o axial ao corte original: agora a regua precisa reaparecer.
+  await cliqueNoVoxel("Coronal", 10, corteAxial);
+  await apertarEsc();
+  check("voltando ao corte a regua volta", (await lerRegras()).Axial === 1,
+    JSON.stringify(await lerRegras()));
+
+  // --- o eixo vertical do coronal vale 1,00 mm, nao 0,25 ---
+  console.log("\n-- regua no coronal: eixo v usa o espacamento entre cortes --");
+  await cliqueNoVoxel("Coronal", 10, 8);
+  await cliqueNoVoxel("Coronal", 22, 12);
+  const medidaCoronal = (await lerMedicoes()).at(-1);
+  check("distancia coronal = 5,00 mm", medidaCoronal?.mm === 5, `mm=${medidaCoronal?.mm}`);
+  check("medida coronal guardada como coronal", medidaCoronal?.plano === "coronal",
+    medidaCoronal?.plano ?? "");
+
+  // --- Escape cancela a origem ---
+  // A origem e um clique, e a medida fecha no seguinte. Depois do Escape a
+  // ancora some, entao a distancia final diz QUAL par foi usado.
+  console.log("\n-- Escape cancela a regua em andamento --");
+  await apertarEsc(); // limpa o par que sobrou do coronal
+  const base = (await lerMedicoes()).length;
+  await cliqueNoVoxel("Axial", 10, 10); // origem A
+  await apertarEsc();
+  await cliqueNoVoxel("Axial", 40, 40); // sem Escape, fecharia A->B
+  await cliqueNoVoxel("Axial", 44, 56); // com Escape, fecha B->C
+  const aposEsc = await lerMedicoes();
+  check("Escape nao cria medida nenhuma", aposEsc.length === base + 1, `n=${aposEsc.length}`);
+  // B->C: du 4 e dv 16 voxels = 1,00 mm e 4,00 mm -> 4,12 mm. A->B daria 0,00.
+  check("a ancora descartada virou B->C", aposEsc.at(-1)?.mm === 4.12,
+    `mm=${aposEsc.at(-1)?.mm}`);
+
+  // --- recusas visiveis ---
+  console.log("\n-- a regua recusa e explica --");
+  await apertarEsc();
+  await cliqueNoVoxel("Axial", 20, 20);
+  await cliqueNoVoxel("Axial", 20, 20); // mesmo ponto
+  check("ponto igual nao cria medida", (await lerMedicoes()).length === aposEsc.length);
+  check("ponto igual mostra aviso", await lerErroMedida() !== null, await lerErroMedida() ?? "");
+
+  // --- remover e limpar ---
+  console.log("\n-- remover e limpar medicoes --");
+  await apertarEsc();
+  const remover = await realClick('[aria-label^="Remover medicao"]');
+  check("botao de remover encontrado", !remover.erro, remover.erro ?? "");
+  await sleep(200);
+  const depoisDeRemover = await lerMedicoes();
+  check("medidia removida da lista", depoisDeRemover.length === aposEsc.length - 1,
+    `n=${depoisDeRemover.length}`);
+  // O que esta desenhado tem que ser exatamente o que pertence a este plano e
+  // a ESTE corte agora -- o axial ja nao esta no corte original, entao a
+  // comparacao usa o indice atual e nao o do primeiro clique.
+  const corteAgora = (await lerViewports()).Axial?.valor;
+  const esperadasNoAxial = depoisDeRemover.filter(
+    (m) => m.plano === "axial" && m.corte === corteAgora).length;
+  check("regua do canvas acompanha a lista", (await lerRegras()).Axial === esperadasNoAxial,
+    `desenhadas=${(await lerRegras()).Axial} lista no corte ${corteAgora}=${esperadasNoAxial}`);
+
+  const limpar = await realClick("button", "limpar todas");
+  check("limpar todas clicado", !limpar.erro, limpar.erro ?? "");
+  await sleep(200);
+  check("lista vazia depois de limpar", (await lerMedicoes()).length === 0);
+  check("nenhuma regua no canvas", Object.values(await lerRegras()).every((n) => n === 0),
+    JSON.stringify(await lerRegras()));
 
   check("nenhuma excecao na pagina apos a serie", pageErrors.length === 0,
     pageErrors.join(" | ").slice(0, 200));

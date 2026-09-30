@@ -27,6 +27,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { Tooltip, TooltipTrigger, TooltipContent } from "@/components/ui/tooltip";
+import { TOOL_LABELS } from "@/lib/mock-data";
 
 const TOOLS: { id: Tool; icon: React.ElementType }[] = [
   { id: "WindowLevel", icon: Contrast },
@@ -74,6 +75,9 @@ export function TopBar() {
                 render={
                   <ToggleGroupItem
                     value={tool.id}
+                    // Botao so com icone: sem nome acessivel o leitor de tela
+                    // anuncia "botao" e o tooltip nao e fallback suficiente.
+                    aria-label={TOOL_LABELS[tool.id]}
                     className="data-[state=on]:bg-primary data-[state=on]:text-primary-foreground"
                   >
                     <tool.icon className="size-4" />

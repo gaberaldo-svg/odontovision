@@ -4,7 +4,8 @@ import * as React from "react";
 import { Layers, FileScan, AlertTriangle } from "lucide-react";
 import { ViewportType } from "@/lib/mock-data";
 import type { Plane } from "@/lib/dicom/types";
-import { planeHuAt, voxelFromPlane } from "@/lib/dicom/volume";
+import type { MeasureDraft } from "@/lib/dicom/measure";
+import { planeDistanceMm, planeHuAt, voxelFromPlane } from "@/lib/dicom/volume";
 import { useViewerStore } from "@/store/use-viewer-store";
 import { DicomOverlay } from "@/components/viewer/dicom-overlay";
 import { SliceCanvas } from "@/components/viewer/slice-canvas";
@@ -39,8 +40,13 @@ export function Viewport({ viewport }: ViewportProps) {
   const setCursorHU = useViewerStore((state) => state.setCursorHU);
   const windowWidth = useViewerStore((state) => state.windowWidth);
   const windowCenter = useViewerStore((state) => state.windowCenter);
-  const zoomLevel = useViewerStore((state) => state.zoomLevel);
-  const panOffset = useViewerStore((state) => state.panOffset);
+const zoomLevel = useViewerStore((state) => state.zoomLevel);
+const panOffset = useViewerStore((state) => state.panOffset);
+const activeTool = useViewerStore((state) => state.activeTool);
+const measurements = useViewerStore((state) => state.measurements);
+const measureDraft = useViewerStore((state) => state.measureDraft);
+const addMeasurement = useViewerStore((state) => state.addMeasurement);
+const cancelMeasureDraft = useViewerStore((state) => state.cancelMeasureDraft);
 
   const plane = PLANE[viewport];
   const currentSlice = slices[viewport] || 0;
@@ -59,11 +65,40 @@ export function Viewport({ viewport }: ViewportProps) {
 
   const toVoxel = (u: number, v: number) => voxelFromPlane(plane, currentSlice, u, v);
 
+  const caliper = activeTool === "Caliper";
+
+  // Onde o ponteiro esta, mas so enquanto ha regua em andamento: fora disso
+  // guardar a posicao a cada mousemove redesenharia os tres viewports sem
+  // nenhum ganho visual.
+  const [hover, setHover] = React.useState<{ u: number; v: number } | null>(null);
+
+  // Regras e previa sao por plano e por corte: a regua desenhada no axial 15
+  // nao aparece no coronal nem no axial 16.
+  const rulers = React.useMemo(
+    () => (volume ? measurements.filter((m) => m.plane === plane && m.slice === currentSlice) : []),
+    [measurements, plane, currentSlice, volume],
+  );
+
+  const draft = React.useMemo<MeasureDraft | null>(() => {
+    if (!volume || !caliper || !measureDraft) return null;
+    return {
+      from: measureDraft,
+      to: hover,
+      distanceMm: hover ? planeDistanceMm(volume, plane, measureDraft, hover) : null,
+    };
+  }, [volume, caliper, measureDraft, hover, plane]);
+
   // HU sob o cursor, lido do volume real no plano que esta em foco.
   const handleHover = (u: number, v: number) => {
     if (!volume) return;
     const hu = planeHuAt(volume, plane, currentSlice, u, v);
     setCursorHU(Number.isNaN(hu) ? null : Math.round(hu));
+    if (measureDraft) setHover({ u, v });
+  };
+
+  const handleHoverLeave = () => {
+    setCursorHU(null);
+    setHover(null);
   };
 
   // Clique move o crosshair: escreve nos tres planos ao mesmo tempo.
@@ -75,10 +110,17 @@ export function Viewport({ viewport }: ViewportProps) {
     setCursorHU(Number.isNaN(hu) ? null : Math.round(hu));
   };
 
+  const handleMeasure = (u: number, v: number) => {
+    addMeasurement(plane, currentSlice, u, v);
+  };
+
   return (
     <div
       data-viewport={viewport}
       data-plane={plane}
+      // Quantas regras estao DESENHADAS aqui: e o filtro por plano e por corte
+      // virando numero observavel, sem precisar ler o canvas.
+      data-rulers={rulers.length}
       className="relative flex flex-col flex-1 min-w-0 overflow-hidden rounded-md border border-border bg-viewport aspect-square"
     >
       {!isExamLoaded ? (
@@ -109,9 +151,14 @@ export function Viewport({ viewport }: ViewportProps) {
             zoom={zoomLevel}
             pan={panOffset}
             crosshair={crosshair}
+            caliper={caliper}
+            measurements={rulers}
+            draft={draft}
             onCrosshairMove={handleCrosshairMove}
+            onMeasure={handleMeasure}
+            onDraftCancel={cancelMeasureDraft}
             onHover={handleHover}
-            onHoverLeave={() => setCursorHU(null)}
+            onHoverLeave={handleHoverLeave}
           />
 
           <DicomOverlay viewport={viewport} slice={currentSlice} totalSlices={totalSlices} />

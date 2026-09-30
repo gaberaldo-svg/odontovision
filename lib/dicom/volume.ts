@@ -256,7 +256,7 @@ function values3d(volume: DicomVolume, x: number, y: number, z: number): number 
 
 /**
  * Espessura real de um voxel em mm nas tres direcoes. Usado no readout de
- * posicao e, mais adiante, na medicao em mm.
+ * posicao e na medicao em mm.
  */
 export function voxelSizeMm(volume: DicomVolume): { x: number; y: number; z: number } {
   return {
@@ -264,4 +264,41 @@ export function voxelSizeMm(volume: DicomVolume): { x: number; y: number; z: num
     y: volume.pixelSpacing?.[1] ?? 1,
     z: volume.sliceSpacing ?? volume.pixelSpacing?.[1] ?? 1,
   };
+}
+
+/**
+ * Quanto vale um passo em mm no eixo horizontal e no vertical de um plano.
+ *
+ * Os eixos do plano nao sao sempre x e y: no axial sao, mas o coronal usa x e
+ * z e o sagital usa y e z. Aplicar `pixelSpacing` nos dois eixos mede a serie
+ * `sliceSpacing / pixelSpacing` vezes mais curta em Z -- o mesmo deslize que
+ * `planeAspect` corrige na tela, aqui na conta.
+ */
+export function planeVoxelSizeMm(
+  volume: DicomVolume,
+  plane: Plane,
+): { u: number; v: number } {
+  const { x, y, z } = voxelSizeMm(volume);
+  if (plane === "axial") return { u: x, v: y };
+  if (plane === "coronal") return { u: x, v: z };
+  return { u: y, v: z };
+}
+
+/**
+ * Distancia em mm entre dois pontos do mesmo plano.
+ *
+ * Cada eixo e convertido para mm antes do teorema de Pitagoras. Uma medicao
+ * so vale no plano onde foi feita: os dois pontos ficam no mesmo corte, entao
+ * o indice fixo nao entra na conta.
+ */
+export function planeDistanceMm(
+  volume: DicomVolume,
+  plane: Plane,
+  from: { u: number; v: number },
+  to: { u: number; v: number },
+): number {
+  const size = planeVoxelSizeMm(volume, plane);
+  const du = (to.u - from.u) * size.u;
+  const dv = (to.v - from.v) * size.v;
+  return Math.hypot(du, dv);
 }

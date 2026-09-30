@@ -1,12 +1,37 @@
 "use client";
 
 import { useViewerStore } from "@/store/use-viewer-store";
-import { FileScan, Lock } from "lucide-react";
+import { FileScan, Lock, X } from "lucide-react";
+import type { Plane } from "@/lib/dicom/types";
+import type { MeasureError } from "@/lib/dicom/measure";
+import { formatMm } from "@/lib/format";
 import { Separator } from "@/components/ui/separator";
 import { FileLoader } from "@/components/layout/file-loader";
 
+/** "sagittal" e o valor interno; na UI a viewport se chama "Sagital". */
+const PLANO_LABEL: Record<Plane, string> = {
+  axial: "Axial",
+  coronal: "Coronal",
+  sagittal: "Sagital",
+};
+
+const ERRO_MEDIDA: Record<MeasureError, string> = {
+  "fora-do-plano": "Clique dentro da imagem para medir.",
+  "ponto-igual": "Os dois pontos precisam ser diferentes.",
+};
+
 export function Sidebar() {
-  const { isSidebarOpen, metadata, windowWidth, windowCenter, cursorHU } = useViewerStore();
+  const {
+    isSidebarOpen,
+    metadata,
+    windowWidth,
+    windowCenter,
+    cursorHU,
+    measurements,
+    removeMeasurement,
+    clearMeasurements,
+    lastMeasureError,
+  } = useViewerStore();
 
   if (!isSidebarOpen) return null;
 
@@ -108,6 +133,67 @@ export function Sidebar() {
                   </div>
                 )}
               </div>
+            </div>
+
+            <Separator />
+
+            <div className="flex flex-col gap-2">
+              <div className="flex items-center justify-between">
+                <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                  Medicoes
+                </h3>
+                {measurements.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={clearMeasurements}
+                    className="text-[10px] text-muted-foreground hover:text-foreground underline underline-offset-2"
+                  >
+                    limpar todas
+                  </button>
+                )}
+              </div>
+
+              {measurements.length === 0 ? (
+                <p className="text-[10px] text-muted-foreground">
+                  Ative a Regua e clique em dois pontos do mesmo corte.
+                </p>
+              ) : (
+                <ul className="flex flex-col gap-1" data-measure-list>
+                  {measurements.map((m) => (
+                    <li
+                      key={m.id}
+                      className="flex items-center justify-between gap-2 rounded border border-sidebar-border bg-background px-2 py-1.5"
+                      data-measure=""
+                      data-mm={m.distanceMm}
+                      data-measure-plane={m.plane}
+                      data-measure-slice={m.slice}
+                    >
+                      <span className="font-mono text-[11px] text-muted-foreground">
+                        {PLANO_LABEL[m.plane]} {m.slice}
+                      </span>
+                      <span className="flex items-center gap-1.5">
+                        <span className="font-mono text-[11px] text-primary">
+                          {formatMm(m.distanceMm)}
+                        </span>
+                        <button
+                          type="button"
+                          aria-label={`Remover medicao de ${formatMm(m.distanceMm)}`}
+                          onClick={() => removeMeasurement(m.id)}
+                          className="text-muted-foreground hover:text-foreground"
+                        >
+                          <X className="size-3" />
+                        </button>
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+
+              {lastMeasureError && (
+                <p className="text-[10px] text-destructive" data-measure-error="">
+                  {ERRO_MEDIDA[lastMeasureError]}
+                </p>
+              )}
             </div>
           </>
         )}

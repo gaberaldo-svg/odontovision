@@ -1,7 +1,8 @@
 import { create } from "zustand";
 import { ViewportType, Tool, Preset, ExamMetadata, MOCK_EXAM, MOCK_SLICE_COUNT } from "@/lib/mock-data";
-import type { DicomMeta, DicomVolume } from "@/lib/dicom/types";
+import type { DicomMeta, DicomVolume, Plane } from "@/lib/dicom/types";
 import { autoWindow } from "@/lib/dicom/volume";
+import { buildMeasurement, type Measurement, type MeasureError } from "@/lib/dicom/measure";
 
 /** Voxel apontado pelos tres viewports ao mesmo tempo. */
 export interface Crosshair {
@@ -41,6 +42,14 @@ interface ViewerState {
   isDemoLoaded: boolean;
   activeViewport: ViewportType;
   loadError: string | null;
+  /** Regras confirmadas, com o comprimento ja em mm. */
+  measurements: Measurement[];
+  /** Primeiro ponto de uma regua em andamento, enquanto a tool Regua esta ativa. */
+  measureDraft: { u: number; v: number } | null;
+  /** Recusa do ultimo clique, para a UI explicar em vez de ignorar. */
+  lastMeasureError: MeasureError | null;
+  /** Contador para os ids das regras; nunca reutiliza id apagado. */
+  lastMeasureId: number;
 
   setActiveTool: (tool: Tool) => void;
   setPreset: (preset: Preset) => void;
@@ -49,6 +58,14 @@ interface ViewerState {
   /** Move o crosshair: atualiza os tres planos de uma vez. */
   setCrosshair: (x: number, y: number, z: number) => void;
   setCursorHU: (hu: number | null) => void;
+  /**
+   * Clique com a regua ativa: o primeiro fixa a origem, o segundo fecha a
+   * medida. Fora do par a ancora continua de pe, para o usuario corrigir.
+   */
+  addMeasurement: (plane: Plane, slice: number, u: number, v: number) => void;
+  removeMeasurement: (id: number) => void;
+  clearMeasurements: () => void;
+  cancelMeasureDraft: () => void;
   toggleSidebar: () => void;
   loadDemoExam: () => void;
   /** Entra com o resultado real do worker de DICOM. */
@@ -77,6 +94,10 @@ const initialState = {
   isDemoLoaded: false,
   activeViewport: "Axial" as ViewportType,
   loadError: null as string | null,
+  measurements: [] as Measurement[],
+  measureDraft: null as { u: number; v: number } | null,
+  lastMeasureError: null as MeasureError | null,
+  lastMeasureId: 0,
 };
 
 /** Converte os metadados DICOM no formato que a sidebar ja consome. */
@@ -112,7 +133,13 @@ function planeSliceCounts(volume: DicomVolume): Record<ViewportType, number> {
 export const useViewerStore = create<ViewerState>((set) => ({
   ...initialState,
 
-  setActiveTool: (tool) => set({ activeTool: tool }),
+  setActiveTool: (tool) => set((state) => ({
+    activeTool: tool,
+    // Sair da regua abandona a ancora: um ponto solto esperando o segundo
+    // clique sobreviveria a troca de tool e travaria a proxima medicao.
+    measureDraft: tool === "Caliper" ? state.measureDraft : null,
+    lastMeasureError: null,
+  })),
 
   setPreset: (preset) => set({
     activePreset: preset,
@@ -144,6 +171,36 @@ export const useViewerStore = create<ViewerState>((set) => ({
   }),
 
   setCursorHU: (cursorHU) => set({ cursorHU }),
+
+  addMeasurement: (plane, slice, u, v) => set((state) => {
+    const point = { u, v };
+    const draft = state.measureDraft;
+    // Sem ancora, o clique abre uma. A origem sobrevive a um clique invalido:
+    // errar o segundo ponto e comum, e perder a origem tambem.
+    if (!draft) return { measureDraft: point, lastMeasureError: null };
+
+    const volume = state.volume;
+    if (!volume) return { measureDraft: null, lastMeasureError: null };
+
+    const id = state.lastMeasureId + 1;
+    const built = buildMeasurement(volume, plane, slice, draft, point, id);
+    if (!built.ok) return { lastMeasureError: built.error };
+
+    return {
+      measurements: [...state.measurements, built.measurement],
+      measureDraft: null,
+      lastMeasureError: null,
+      lastMeasureId: id,
+    };
+  }),
+
+  removeMeasurement: (id) => set((state) => ({
+    measurements: state.measurements.filter((m) => m.id !== id),
+  })),
+
+  clearMeasurements: () => set({ measurements: [], measureDraft: null, lastMeasureError: null }),
+
+  cancelMeasureDraft: () => set({ measureDraft: null, lastMeasureError: null }),
 
   toggleSidebar: () => set((state) => ({ isSidebarOpen: !state.isSidebarOpen })),
 
@@ -192,6 +249,11 @@ loadVolume: (meta, volume, series) => set((state) => {
       windowWidth,
       windowCenter,
       activePreset: null,
+      // As regras pertencem ao volume anterior: as distancias em mm so valem
+      // para o espacamento do exame que as originou.
+      measurements: [],
+      measureDraft: null,
+      lastMeasureError: null,
       slices: {
         Axial: Math.floor((counts.Axial - 1) / 2),
         Coronal: Math.floor((counts.Coronal - 1) / 2),

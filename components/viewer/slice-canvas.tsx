@@ -2,7 +2,9 @@
 
 import React, { useEffect, useRef, useState } from "react";
 import type { DicomVolume, Plane } from "@/lib/dicom/types";
+import type { MeasureDraft, Measurement } from "@/lib/dicom/measure";
 import { planeAspect, planeDimensions, planeSliceCount, planeSliceToImageData } from "@/lib/dicom/volume";
+import { formatMm } from "@/lib/format";
 
 export interface SliceCanvasProps {
   volume: DicomVolume;
@@ -16,7 +18,16 @@ export interface SliceCanvasProps {
   pan: { x: number; y: number };
   /** Posicao do crosshair no plano, em coordenadas de voxel. */
   crosshair: { u: number; v: number } | null;
+  /** Tool Regua ativa: o clique vira ponto de medicao em vez de so crosshair. */
+  caliper: boolean;
+  /** Regras confirmadas deste plano e deste corte. */
+  measurements: Measurement[];
+  /** Previa da regua em andamento: origem ate o ponteiro. Null quando nao ha. */
+  draft: MeasureDraft | null;
   onCrosshairMove: (u: number, v: number) => void;
+  /** Clique com a regua ativa. */
+  onMeasure: (u: number, v: number) => void;
+  onDraftCancel: () => void;
   onHover: (u: number, v: number) => void;
   onHoverLeave: () => void;
 }
@@ -39,7 +50,12 @@ export function SliceCanvas({
   zoom,
   pan,
   crosshair,
+  caliper,
+  measurements,
+  draft,
   onCrosshairMove,
+  onMeasure,
+  onDraftCancel,
   onHover,
   onHoverLeave,
 }: SliceCanvasProps) {
@@ -131,6 +147,36 @@ export function SliceCanvas({
     if (crosshair) {
       drawCrosshair(ctx, crosshair.u * scale, crosshair.v * aspect * scale, imgData.width, imgData.height);
     }
+
+    // As reguas entram no mesmo transform do desenho: o eixo v precisa do
+    // mesmo `aspect` que a imagem, senao a linha sai na diagonal errada.
+    for (const m of measurements) {
+      drawRuler(
+        ctx,
+        { x: m.a.u * scale, y: m.a.v * aspect * scale },
+        { x: m.b.u * scale, y: m.b.v * aspect * scale },
+        formatMm(m.distanceMm),
+        false,
+        imgData.width,
+        imgData.height,
+      );
+    }
+
+    if (draft) {
+      const origem = { x: draft.from.u * scale, y: draft.from.v * aspect * scale };
+      drawRuler(
+        ctx,
+        origem,
+        draft.to
+          ? { x: draft.to.u * scale, y: draft.to.v * aspect * scale }
+          : origem,
+        draft.distanceMm === null ? "" : formatMm(draft.distanceMm),
+        true,
+        imgData.width,
+        imgData.height,
+      );
+    }
+
     ctx.restore();
   }, [
     volume,
@@ -143,6 +189,8 @@ export function SliceCanvas({
     pan.y,
     crosshair?.u,
     crosshair?.v,
+    measurements,
+    draft,
     size.width,
     size.height,
     size.dpr,
@@ -184,8 +232,22 @@ export function SliceCanvas({
       return;
     }
     const voxel = toVoxel(e.clientX, e.clientY);
-    if (voxel) onCrosshairMove(voxel.u, voxel.v);
+    if (!voxel) return;
+    onCrosshairMove(voxel.u, voxel.v);
+    // A regua nasce no pointerup, que e onde o codigo ja sabe se foi clique
+    // ou arrasto. No pointerdown um arrasto deixaria a origem no lugar.
+    if (caliper) onMeasure(voxel.u, voxel.v);
   };
+
+  // Com uma regua em andamento, Escape descarta a origem.
+  useEffect(() => {
+    if (!draft) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onDraftCancel();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [draft, onDraftCancel]);
 
   return (
     <div
@@ -242,5 +304,64 @@ function drawCrosshair(
   // Moldura: ajuda a ler a borda da imagem contra o fundo preto.
   ctx.strokeStyle = "rgba(255, 255, 255, 0.12)";
   ctx.strokeRect(0.5, 0.5, width - 1, height - 1);
+  ctx.restore();
+}
+
+/**
+ * Regua em mm sobre a imagem: segmento, marcas de ponta e o comprimento.
+ *
+ * `dashed` marca a previa -- a ancora foi clicada mas a regua ainda nao foi
+ * fechada. As coordenadas ja vem em pixels do espaco da imagem, entao esta
+ * funcao nao sabe de voxel, aspect nem escala.
+ */
+function drawRuler(
+  ctx: CanvasRenderingContext2D,
+  a: { x: number; y: number },
+  b: { x: number; y: number },
+  label: string,
+  dashed: boolean,
+  width: number,
+  height: number,
+) {
+  ctx.save();
+  ctx.lineWidth = 1.5;
+  ctx.strokeStyle = dashed ? "rgba(250, 204, 21, 0.9)" : "rgba(250, 204, 21, 1)";
+  ctx.setLineDash(dashed ? [4, 3] : []);
+  ctx.beginPath();
+  ctx.moveTo(a.x, a.y);
+  ctx.lineTo(b.x, b.y);
+  ctx.stroke();
+  ctx.setLineDash([]);
+
+  // Ticks de 3px nas pontas, para a extremidade da leitura ficar exata.
+  for (const p of [a, b]) {
+    ctx.beginPath();
+    ctx.moveTo(p.x - 3, p.y - 3);
+    ctx.lineTo(p.x + 3, p.y + 3);
+    ctx.moveTo(p.x + 3, p.y - 3);
+    ctx.lineTo(p.x - 3, p.y + 3);
+    ctx.stroke();
+  }
+
+  if (!label) {
+    ctx.restore();
+    return;
+  }
+
+  // Rotulo ao lado do meio da linha, preso dentro da imagem: um rotulo que sai
+  // da borda cai no tarja preta e some.
+  ctx.font = "600 11px ui-monospace, SFMono-Regular, Menlo, monospace";
+  const textWidth = ctx.measureText(label).width;
+  const boxW = textWidth + 8;
+  const boxH = 15;
+  const mx = (a.x + b.x) / 2;
+  const my = (a.y + b.y) / 2;
+  const bx = Math.max(2, Math.min(mx + 9, width - boxW - 2));
+  const by = Math.max(2, Math.min(my - boxH - 4, height - boxH - 2));
+
+  ctx.fillStyle = "rgba(0, 0, 0, 0.75)";
+  ctx.fillRect(bx, by, boxW, boxH);
+  ctx.fillStyle = "#facc15";
+  ctx.fillText(label, bx + 4, by + boxH - 4);
   ctx.restore();
 }

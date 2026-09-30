@@ -37,8 +37,9 @@ function near(label, actual, expected, tol) {
 // volume.ts e TypeScript puro (sem enum/namespace), entao o Node carrega
 // direto com type-stripping. O import de tipos e apagado em tempo de
 // compilacao, entao types.ts nem chega a ser resolvido.
-const { huAt, huToGray, autoWindow, storedRange, sliceToImageData, voxelIndex } =
+const { huAt, huToGray, autoWindow, storedRange, sliceToImageData, voxelIndex, planeVoxelSizeMm, planeDistanceMm } =
   await import("../lib/dicom/volume.ts");
+const { buildMeasurement } = await import("../lib/dicom/measure.ts");
 
 // --- monta o volume a partir da fixture, como o worker faz ---
 const byteArray = new Uint8Array(readFileSync(SAMPLE));
@@ -325,6 +326,64 @@ console.log("\n-- voxelSizeMm --");
 const mm = voxelSizeMm(mprVolume);
 check("x/y/z em mm", mm.x === 0.5 && mm.y === 0.5 && mm.z === 2, JSON.stringify(mm));
 check("z usa sliceSpacing, nao pixelSpacing", mm.z === 2, "o bug antigo devolvia 0.5");
+
+console.log("\n-- planeVoxelSizeMm: cada plano usa o eixo certo --");
+near("axial u = x", planeVoxelSizeMm(mprVolume, "axial").u, 0.5, 1e-9);
+near("axial v = y", planeVoxelSizeMm(mprVolume, "axial").v, 0.5, 1e-9);
+near("coronal u = x", planeVoxelSizeMm(mprVolume, "coronal").u, 0.5, 1e-9);
+check("coronal v = z", planeVoxelSizeMm(mprVolume, "coronal").v === 2,
+  `= ${planeVoxelSizeMm(mprVolume, "coronal").v}`);
+near("sagital u = y", planeVoxelSizeMm(mprVolume, "sagital").u, 0.5, 1e-9);
+check("sagital v = z", planeVoxelSizeMm(mprVolume, "sagital").v === 2,
+  `= ${planeVoxelSizeMm(mprVolume, "sagital").v}`);
+
+// A fixture MPR e 0,5 mm nos dois eixos da imagem e 2 mm entre cortes, e tem
+// 8x6x4 voxels. As medidas abaixo sao triplos pitagoricos multiplicados por
+// 0,5: nao ha numero magico, so a conta.
+console.log("\n-- planeDistanceMm: Pitagoras com cada eixo em mm --");
+// axial (8x6): du 3 voxels = 1,5 mm, dv 4 voxels = 2,0 mm -> 2,5 mm.
+near("axial 3,4 voxels = 2,5 mm", planeDistanceMm(mprVolume, "axial", { u: 0, v: 0 }, { u: 3, v: 4 }), 2.5, 1e-9);
+// O eixo v do coronal e z, que vale 2 mm e nao 0,5: 3 voxels = 6 mm. Com
+// pixelSpacing nos dois eixos daria 1,5 mm, 4x menor -- o deslize a acertar.
+near("coronal 3 voxels em v = 6 mm", planeDistanceMm(mprVolume, "coronal", { u: 0, v: 0 }, { u: 0, v: 3 }), 6, 1e-9);
+near("sagital 3 voxels em v = 6 mm", planeDistanceMm(mprVolume, "sagital", { u: 0, v: 0 }, { u: 0, v: 3 }), 6, 1e-9);
+// Eixo misto no coronal: 3 em u (1,5 mm) e 2 em v (4,0 mm) -> 4,27 mm.
+near("coronal misto", planeDistanceMm(mprVolume, "coronal", { u: 0, v: 0 }, { u: 3, v: 2 }),
+  Math.hypot(3 * 0.5, 2 * 2), 1e-9);
+near("simetria", planeDistanceMm(mprVolume, "coronal", { u: 0, v: 3 }, { u: 0, v: 0 }), 6, 1e-9);
+check("mesmo ponto = 0 mm", planeDistanceMm(mprVolume, "axial", { u: 7, v: 5 }, { u: 7, v: 5 }) === 0);
+check("um voxel em x = 0,5 mm", planeDistanceMm(mprVolume, "axial", { u: 0, v: 0 }, { u: 1, v: 0 }) === 0.5);
+// Sem sliceSpacing nem pixelSpacing a leitura cai em 1 mm por voxel.
+near("fallback isotropico", planeDistanceMm({ ...mprVolume, pixelSpacing: undefined, sliceSpacing: undefined },
+  "coronal", { u: 0, v: 0 }, { u: 3, v: 3 }), Math.hypot(3, 3), 1e-9);
+
+console.log("\n-- buildMeasurement: geometria e arredondamento --");
+{
+  const ok = buildMeasurement(mprVolume, "axial", 1, { u: 0, v: 1 }, { u: 3, v: 5 }, 7);
+  check("aceita dois pontos validos", ok.ok === true, JSON.stringify(ok));
+  check("guarda plano, corte e id", ok.ok && ok.measurement.plane === "axial"
+    && ok.measurement.slice === 1 && ok.measurement.id === 7);
+  // 1,5 mm e 2,0 mm: a soma das casas da 2,5 mm exatos, sem digito inventado.
+  check("2,50 mm", ok.ok && ok.measurement.distanceMm === 2.5,
+    `= ${ok.ok ? ok.measurement.distanceMm : ok.error}`);
+  // sqrt(0,5^2 + 0,5^2) = 0,7071: e aqui que as duas casas aparecem.
+  check("arredonda para duas casas",
+    buildMeasurement(mprVolume, "axial", 0, { u: 0, v: 0 }, { u: 1, v: 1 }, 1).measurement.distanceMm === 0.71,
+    `= ${buildMeasurement(mprVolume, "axial", 0, { u: 0, v: 0 }, { u: 1, v: 1 }, 1).measurement.distanceMm}`);
+
+  const igual = buildMeasurement(mprVolume, "axial", 1, { u: 4, v: 4 }, { u: 4, v: 4 }, 1);
+  check("recusa ponto igual", igual.ok === false && igual.error === "ponto-igual", JSON.stringify(igual));
+
+  const fora = buildMeasurement(mprVolume, "axial", 1, { u: 0, v: 0 }, { u: 999, v: 0 }, 1);
+  check("recusa ponto fora do plano", fora.ok === false && fora.error === "fora-do-plano", JSON.stringify(fora));
+  const foraV = buildMeasurement(mprVolume, "axial", 1, { u: 0, v: 999 }, { u: 0, v: 1 }, 1);
+  check("recusa v fora do plano", foraV.ok === false && foraV.error === "fora-do-plano");
+  // O axial tem 6 linhas e o coronal so 4: o mesmo v passa num e nao no outro.
+  check("recusa v que so cabe no axial", buildMeasurement(mprVolume, "coronal", 0, { u: 0, v: 5 }, { u: 0, v: 1 }, 1).ok === false);
+  check("aceita o mesmo v no axial", buildMeasurement(mprVolume, "axial", 0, { u: 0, v: 5 }, { u: 0, v: 1 }, 1).ok === true);
+  check("recusa ponto fracionario", buildMeasurement(mprVolume, "axial", 0, { u: 0, v: 0 }, { u: 1.5, v: 0 }, 1).ok === false);
+  check("recusa ponto negativo", buildMeasurement(mprVolume, "axial", 0, { u: -1, v: 0 }, { u: 1, v: 0 }, 1).ok === false);
+}
 
 console.log(`\n${pass} passaram, ${fail} falharam`);
 process.exit(fail === 0 ? 0 : 1);

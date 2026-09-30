@@ -16,15 +16,27 @@ inteira.
 
 Contexto é o recurso mais escasso. Pedir tudo de uma vez é o que quebra loops.
 
+## Teste sem framework
+
+Não há Vitest/Jest. Cada `scripts/verify-*.mjs` é um script Node que importa o
+`.ts` da lib **com type-stripping** e roda no topo do arquivo (`await import`).
+Isso impõe duas regras em `lib/`:
+
+- import **de valor** precisa da extensão (`from "./volume.ts"`, como já em
+  `parse.ts` e `worker.ts`). Sem ela o Node não resolve o módulo e o script
+  morre antes do primeiro check; import **de tipo** pode ficar sem extensão,
+  porque é apagado na compilação;
+- nada de `enum` nem `namespace`: type-stripping não remove enum.
+
 ## Fases
 
 - **Fase 1**: casca visual e design system, tudo com dado mockado.
 - **Fase 2**: ler UM arquivo `.dcm` local e extrair tags no console.
 - **Fase 3**: canvas axial 2D com HU e W/L reais.
-- **Fase 4a** (estamos aqui): carga de série multi-arquivo/multi-frame, volume
-  3D achatado `[z][y][x]` e MPR axial/coronal/sagittal com crosshair
-  sincronizado.
-- **Fase 4b**: medição de distância em mm. Ainda não existe.
+- **Fase 4a**: carga de série multi-arquivo/multi-frame, volume 3D achatado
+  `[z][y][x]` e MPR axial/coronal/sagittal com crosshair sincronizado.
+- **Fase 4b** (estamos aqui): régua de distância em mm por plano, com lista,
+  remoção e limpeza. Sem HU dos pontos e sem ΔHU.
 
 Só avance de fase com ordem explícita do usuário.
 
@@ -38,10 +50,19 @@ Estas custaram bug real; todas já têm teste.
   `max(columns, rows * aspect)`: se o cálculo do `scale` e o do render usarem
   aspectos diferentes, a imagem encolhe (o axial já saiu com ¼ do tamanho)
   sem nenhum erro visível.
-- **O viewport não é quadrado.** O grid estica a altura e o `aspect-square`
-  perde para o stretch, então a imagem fica centrada com tarja preta. Nada de
-  medir posição por fração da altura do canvas: converta coordenada de voxel
-  em pixel com `imagemDoPlano` no `scripts/e2e-dicom.mjs`.
+- **A medida em mm tem a mesma pegadinha, agora na conta.** O eixo v do
+  coronal e do sagittal é z, que vale `sliceSpacing` — não `pixelSpacing`.
+  Usar `pixelSpacing` nos dois eixos mede 4× curto (1,00 mm contra 0,25 mm na
+  fixture), e o sintoma é o mesmo: erro 4× sem nenhum erro na tela. Use
+  `planeVoxelSizeMm`/`planeDistanceMm`, nunca `pixelSpacing` direto.
+- **A régua é do plano E do corte onde foi desenhada** (`data-rulers` no
+  viewport conta quantas estão visíveis). Medir não projeta para os outros
+  planos: um viewer de PACS mostra as réguas nos MPRs, aqui elas somem, e o
+  E2E compara desenhadas × lista no corte atual.
+- **O canvas é quadrado; o que sobra é tarja.** O `aspect-square` do viewport
+  resolve, e `imagemDoPlano` no `scripts/e2e-dicom.mjs` centraliza a imagem
+  dentro dele. Nada de medir posição por fração da altura: converta
+  coordenada de voxel em pixel pelo centro do voxel (`u + 0.5`).
 - **Plano ortogonal só existe com `slices >= 2`.** Um `.dcm` de 1 frame não tem
   eixo Z; a UI explica em vez de mostrar imagem vazia.
 - `Sagital` é o nome da viewport; `"sagittal"` é o valor interno de `Plane`.
@@ -54,7 +75,7 @@ npm run build            # build de produção
 npm run sample           # gera a fixture de 1 corte em samples/
 npm run sample:series    # gera a série de 32 cortes + a variante multiframe
 npm run verify:sample    # valida a fixture de 1 corte (27 checks)
-npm run verify:volume    # valida HU/W-L/MPR puros (74 checks)
+npm run verify:volume    # valida HU/W-L/MPR/medicao puros (99 checks)
 npm run verify:series    # monta a série real e confere voxel a voxel (50 checks)
 npm run e2e              # Chrome headless via CDP, porta 3210
 npm run verify           # tsc + build + sample + volume + series + e2e

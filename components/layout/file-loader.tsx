@@ -3,16 +3,23 @@
 // Fase 2: leitura de UM arquivo .dcm por vez. Escolhe o primeiro .dcm
 // solto e reporta o resultado no console do navegador.
 
-import { useCallback, useRef, useState } from "react";
+import * as React from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { FileScan, Loader2, TriangleAlert } from "lucide-react";
 import { parseDicomFile, type DicomParseResult } from "@/lib/dicom/client";
+import { onOpenFilePicker } from "@/lib/dicom/file-picker";
+import { useViewerStore } from "@/store/use-viewer-store";
 
 type Status = "idle" | "reading" | "done" | "error";
 
-export function FileLoader() {
+export function FileLoader({ compact = false }: { compact?: boolean }) {
   const inputRef = useRef<HTMLInputElement>(null);
+  const loadVolume = useViewerStore((state) => state.loadVolume);
   const [status, setStatus] = useState<Status>("idle");
   const [message, setMessage] = useState<string | null>(null);
+
+  // Botoes em outras partes da UI pedem a abertura deste mesmo input.
+  useEffect(() => onOpenFilePicker(() => inputRef.current?.click()), []);
 
   const onPick = useCallback(async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
@@ -24,18 +31,33 @@ export function FileLoader() {
 
     try {
       const result: DicomParseResult = await parseDicomFile(file);
+      const { meta, volume } = result;
 
-      // Especificado na fase 2: metadados no console.
+      // Especificado na fase 2/3: metadados no console.
       console.group(`[OdontoVision] ${result.fileName}`);
-      console.table(result.meta);
-      console.log("pixelData:", result.pixelData);
+      console.table(meta);
+      console.log("volume:", volume);
       console.log("tags lidas:", result.tagCount, "| avisos:", result.warnings.length);
       console.groupEnd();
 
+      if (result.needsDecompression) {
+        setStatus("error");
+        setMessage(
+          "Sintaxe de transferencia comprimida. Decodificacao JPEG/JPEG2000 fica para uma fase posterior.",
+        );
+        return;
+      }
+      if (!volume) {
+        setStatus("error");
+        setMessage("O arquivo nao trouxe pixel data utilizavel (16 bits, escala de cinza).");
+        return;
+      }
+
+      loadVolume(meta, volume);
       setStatus("done");
       setMessage(
-        `${result.meta.rows}x${result.meta.columns} · ${result.meta.numberOfFrames} frame(s) · ` +
-          `${result.tagCount} tags · ${result.meta.pixelSpacing?.join(" x ") ?? "-"} mm`,
+        `${meta.columns}x${meta.rows} · ${volume.slices} corte(s) · ` +
+          `${result.tagCount} tags · ${meta.pixelSpacing?.slice(0, 2).join(" x ") ?? "-"} mm`,
       );
     } catch (error) {
       const text = error instanceof Error ? error.message : String(error);
@@ -43,7 +65,7 @@ export function FileLoader() {
       setStatus("error");
       setMessage(text);
     }
-  }, []);
+  }, [loadVolume]);
 
   return (
     <div className="space-y-2">
@@ -71,8 +93,15 @@ export function FileLoader() {
       </button>
 
       <p className="text-[10px] leading-relaxed text-muted-foreground">
-        O arquivo e processado localmente. Use <code className="font-mono">samples/phantom-64.dcm</code>{" "}
-        gerado por <code className="font-mono">npm run sample</code>.
+        {compact ? (
+          "Processado localmente no navegador."
+        ) : (
+          <>
+            O arquivo e processado localmente. Use{" "}
+            <code className="font-mono">samples/phantom-64.dcm</code> gerado por{" "}
+            <code className="font-mono">npm run sample</code>.
+          </>
+        )}
       </p>
 
       {message && (

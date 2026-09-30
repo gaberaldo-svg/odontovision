@@ -166,7 +166,18 @@ try {
   await cdp.send("Page.enable");
   await cdp.send("DOM.enable");
 
-  console.log(`navegando para http://localhost:${PORT}/ ...`);
+  // Headless abre em 800x600, abaixo do breakpoint `lg` (1024px) onde a sidebar
+  // fica visivel. Sem isso, [data-hu] nunca existe e o teste de HU falha.
+  const VIEW_W = 1600;
+  const VIEW_H = 1000;
+  await cdp.send("Emulation.setDeviceMetricsOverride", {
+    width: VIEW_W,
+    height: VIEW_H,
+    deviceScaleFactor: 1,
+    mobile: false,
+  });
+
+  console.log(`navegando para http://localhost:${PORT}/ (viewport ${VIEW_W}x${VIEW_H}) ...`);
   await cdp.send("Page.navigate", { url: `http://localhost:${PORT}/` });
   await sleep(3500);
 
@@ -177,6 +188,7 @@ try {
       hasFileLoader: !!document.querySelector('input[type=file]'),
       accept: document.querySelector('input[type=file]')?.accept ?? null,
       botoes: [...document.querySelectorAll('button')].map(b => b.textContent.trim()).filter(Boolean).slice(0, 6),
+      canvasAntes: document.querySelectorAll('canvas').length,
     }))()`,
     returnByValue: true,
   });
@@ -189,6 +201,7 @@ try {
     (probe.botoes ?? []).some((b) => /Ler arquivo/i.test(b)),
     (probe.botoes ?? []).join(" | ").slice(0, 70),
   );
+  check("nenhum canvas antes de carregar", probe.canvasAntes === 0, `${probe.canvasAntes}`);
 
   console.log(`\ninjetando ${SAMPLE} no input ...`);
   const { root } = await cdp.send("DOM.getDocument", { depth: -1 });
@@ -224,8 +237,8 @@ try {
   const tableRow = consoleLines.find((l) => l.level === "table");
   check("console.table com os metadados", !!tableRow);
 
-  const pixelLine = consoleLines.find((l) => /pixelData:/.test(l.text));
-  check("console.log com pixelData", !!pixelLine, pixelLine ? pixelLine.text.slice(0, 90) : "");
+  const volumeLine = consoleLines.find((l) => /volume:/.test(l.text));
+  check("console.log com o volume", !!volumeLine, volumeLine ? volumeLine.text.slice(0, 90) : "");
 
   const tagLine = consoleLines.find((l) => /tags lidas/.test(l.text));
   check("console.log com contagem de tags", !!tagLine, tagLine ? tagLine.text : "");
@@ -249,6 +262,177 @@ try {
     wire.workerChunks.length > 0,
     `${wire.workerChunks.length} chunk(s), ${wire.todosChunks} chunks no total`,
   );
+
+  // --- Fase 3: o canvas mostra a imagem real? ---
+  // A fixture e um phantom concentrico em camadas. Na coluna central:
+  //   y 0-6 ar (-900) | 8-18 mole (120) | 20-22 casca (900)
+  //   y 24-38 nucleo (2200) | 40-42 casca | 44-54 mole | 56-63 ar
+  // Normalizado sobre a altura: ar=0.03, mole=0.25, casca=0.32,
+  // nucleo=0.50, cascaInf=0.64.
+  console.log("\n-- canvas renderizou a imagem real --");
+  const readProfile = async () => {
+    const { result } = await cdp.send("Runtime.evaluate", {
+      expression: `(() => {
+        const c = document.querySelector('canvas');
+        if (!c) return { erro: 'sem canvas' };
+        const ctx = c.getContext('2d');
+        const w = c.width, h = c.height;
+        const cinza = (fx, fy) => {
+          const d = ctx.getImageData(Math.round(w * fx), Math.round(h * fy), 1, 1).data;
+          return d[0];
+        };
+        return {
+          w, h,
+          dpr: window.devicePixelRatio || 1,
+          cssW: c.clientWidth, cssH: c.clientHeight,
+          // retangulo do canvas em coordenadas da viewport, para o mouse
+          rect: (({ x, y, width, height }) => ({ x, y, width, height }))(c.getBoundingClientRect()),
+          ar: cinza(0.5, 0.03),
+          mole: cinza(0.5, 0.25),
+          casca: cinza(0.5, 0.32),
+          nucleo: cinza(0.5, 0.50),
+          cascaInf: cinza(0.5, 0.64),
+          arInf: cinza(0.5, 0.97),
+          cor: (() => { const d = ctx.getImageData(Math.round(w/2), Math.round(h/2), 1, 1).data; return [d[0],d[1],d[2],d[3]]; })(),
+        };
+      })()`,
+      returnByValue: true,
+    });
+    return result.value ?? {};
+  };
+
+  const cv = await readProfile();
+  check("canvas existe", !cv.erro, cv.erro ?? "");
+  check("canvas tem pixels", (cv.w ?? 0) > 0 && (cv.h ?? 0) > 0, `${cv.w}x${cv.h} @dpr${cv.dpr}`);
+  check("render em cinza opaco (R=G=B, A=255)",
+    cv.cor?.[0] === cv.cor?.[1] && cv.cor?.[1] === cv.cor?.[2] && cv.cor?.[3] === 255,
+    `${cv.cor?.join("/")}`);
+
+  // Janela da fixture: wc=400 ww=400 -> corte em 200 e 600.
+  // ar e mole ficam pretos; casca e nucleo ficam brancos.
+  check("ar preto", cv.ar === 0, `cinza=${cv.ar}`);
+  check("tecido mole preto (abaixo de 200)", cv.mole === 0, `cinza=${cv.mole}`);
+  check("casca branca (acima de 600)", cv.casca === 255, `cinza=${cv.casca}`);
+  check("nucleo branco", cv.nucleo === 255, `cinza=${cv.nucleo}`);
+  check("casca inferior branca", cv.cascaInf === 255, `cinza=${cv.cascaInf}`);
+  check("ar inferior preto", cv.arInf === 0, `cinza=${cv.arInf}`);
+
+  // Contraste antes do preset, para comparar depois.
+  const antes = { mole: cv.mole, nucleo: cv.nucleo, ar: cv.ar, casca: cv.casca };
+
+  // --- O preset W/L realmente redesenha os pixels? ---
+  console.log("\n-- preset W/L altera o contraste renderizado --");
+
+  /** Clique de verdade: Base UI abre o menu em pointerdown, nao em click. */
+  const realClick = async (selector, textMatch) => {
+    const { result } = await cdp.send("Runtime.evaluate", {
+      expression: `(() => {
+        const els = [...document.querySelectorAll(${JSON.stringify(selector)})];
+        const el = ${textMatch ? `els.find(e => new RegExp(${JSON.stringify(textMatch)}, 'i').test(e.textContent ?? ''))` : "els[0]"};
+        if (!el) return { erro: 'alvo nao encontrado' };
+        const r = el.getBoundingClientRect();
+        return { x: r.x + r.width / 2, y: r.y + r.height / 2, texto: el.textContent?.trim() ?? '' };
+      })()`,
+      returnByValue: true,
+    });
+    const v = result.value ?? {};
+    if (v.erro) return v;
+    for (const type of ["mousePressed", "mouseReleased"]) {
+      await cdp.send("Input.dispatchMouseEvent", {
+        type,
+        x: Math.round(v.x),
+        y: Math.round(v.y),
+        button: "left",
+        clickCount: 1,
+      });
+    }
+    await sleep(400);
+    return v;
+  };
+
+  const btnWl = await realClick("button", "W/L");
+  check("botao W/L clicado", !btnWl.erro, btnWl.texto ?? btnWl.erro ?? "");
+
+  const { result: itensRemote } = await cdp.send("Runtime.evaluate", {
+    expression: `[...document.querySelectorAll('[data-slot=dropdown-menu-item]')].map(e => e.textContent.trim())`,
+    returnByValue: true,
+  });
+  const itens = itensRemote.value ?? [];
+  check("menu de presets realmente abriu", itens.length >= 3, `itens: ${itens.join(", ")}`);
+
+  const pick = await realClick("[data-slot=dropdown-menu-item]", "Osso Geral");
+  check("preset 'Osso Geral' acionado", !pick.erro && /Osso Geral/.test(pick.texto ?? ""), pick.texto ?? pick.erro ?? "");
+  await sleep(600);
+
+  // O item precisa ter alterado o estado do store, nao so fechado o menu.
+  const { result: rotuloWl } = await cdp.send("Runtime.evaluate", {
+    expression: `[...document.querySelectorAll('button')].find(b => /W\\/L|Osso Geral|Esmalte/.test(b.textContent))?.textContent?.trim() ?? ""`,
+    returnByValue: true,
+  });
+  check("trigger mostra o preset ativo", /Osso Geral/.test(rotuloWl.value ?? ""), `rotulo="${rotuloWl.value}"`);
+
+  // fecha o menu para nao interceptar o mouse no canvas
+  await cdp.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 });
+  await cdp.send("Input.dispatchKeyEvent", { type: "keyUp", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 });
+  await sleep(300);
+
+  const depois = await readProfile();
+  // Osso Geral = ww 2000 / wc 450 -> janela [-550, 1450].
+  // Com a janela nativa 400/400 = [200, 600] o tecido mole (120) e o ar ficam
+  // pretos e a casca (900) satura. Ao abrir a janela o mole entra e a casca dessatura.
+  check("ar continua preto em Osso Geral", (depois.ar ?? -1) === 0, `cinza=${depois.ar}`);
+  check("mole ~85 em Osso Geral", Math.abs((depois.mole ?? 0) - 85) <= 2, `cinza=${depois.mole}`);
+  check("casca ~185 em Osso Geral", Math.abs((depois.casca ?? 0) - 185) <= 2, `cinza=${depois.casca}`);
+  check("nucleo satura em Osso Geral", (depois.nucleo ?? 0) === 255, `cinza=${depois.nucleo}`);
+  check("contraste aumentou (mole saiu do preto)", (depois.mole ?? 0) > antes.mole,
+    `${antes.mole} -> ${depois.mole}`);
+  check("casca dessaturou", (depois.casca ?? 255) < antes.casca,
+    `${antes.casca} -> ${depois.casca}`);
+
+  // --- HU real sob o cursor ---
+  console.log("\n-- HU lido do volume sob o cursor --");
+  // dispatchMouseEvent usa coordenadas da viewport, entao somamos o rect do canvas.
+  const lerHu = async () => {
+    const { result } = await cdp.send("Runtime.evaluate", {
+      expression: `document.querySelector('[data-hu]')?.textContent?.trim() ?? null`,
+      returnByValue: true,
+    });
+    return result.value;
+  };
+  const passarMouse = async (fx, fy) => {
+    const x = Math.round(cv.rect.x + cv.rect.width * fx);
+    const y = Math.round(cv.rect.y + cv.rect.height * fy);
+    // dois eventos: o primeiro pode ser tratado como entrada, o segundo move de fato
+    await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", x, y, button: "none" });
+    await sleep(120);
+    await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: x + 1, y, button: "none" });
+    await sleep(320);
+    return lerHu();
+  };
+  const paraNum = (t) => {
+    const n = Number.parseInt(String(t ?? "").replace(/[^\d-]/g, ""), 10);
+    return Number.isFinite(n) ? n : null;
+  };
+
+  // Varre a linha vertical central. Cada fracao esta dentro de uma camada do
+  // phantom, mas o teste nao deve depender de acerto de geometria: o que importa
+  // e que aparecam valores negativos E positivos coerentes com as camadas.
+  const amostras = [];
+  for (const fy of [0.02, 0.06, 0.12, 0.16, 0.22, 0.26, 0.32, 0.45, 0.55, 0.62, 0.66, 0.90, 0.94, 0.98]) {
+    const texto = await passarMouse(0.5, fy);
+    amostras.push({ fy, texto, hu: paraNum(texto) });
+  }
+  console.log("  varredura:", amostras.map((a) => `${a.fy}:${a.texto ?? "vazio"}`).join("  "));
+
+  const lidos = amostras.map((a) => a.hu).filter((v) => v !== null);
+  check("HU aparece na sidebar em varios pontos", lidos.length >= 8,
+    `${lidos.length}/${amostras.length} pontos com HU`);
+  check("HU na casca ~900", lidos.some((v) => Math.abs(v - 900) < 60),
+    amostras.filter((a) => a.hu !== null).map((a) => `${a.fy}:${a.hu}`).join(" "));
+  check("HU negativo no ar", lidos.some((v) => v < -500 && v > -1000),
+    amostras.filter((a) => a.hu !== null).map((a) => `${a.fy}:${a.hu}`).join(" "));
+  check("HU varia com a camada (nao e constante)", new Set(lidos).size >= 3,
+    `distintos: ${[...new Set(lidos)].join(", ")}`);
 
   if (process.env.VERBOSE) {
     console.log("\n=== console do browser ===");

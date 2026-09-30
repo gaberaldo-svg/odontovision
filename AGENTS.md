@@ -5,32 +5,43 @@ Este é o **OdontoVision** — visualizador web de tomografia odontológica/maxi
 
 ## Regra de ouro do projeto
 
-**Fase 1 = casca visual e design system. Nenhuma lógica DICOM real.**
+**O processing é 100% client-side. Nada de upload, nada de backend.**
 
-Enquanto `src/` não tiver os componentes de UI, NÃO implemente:
-parsing DICOM, HU, presets numéricos de W/L, canvas/WebGL,
-Cornerstone3D, medição em mm. Tudo mockado.
+A UI usa **Base UI** (`@base-ui/react`), não Radix. Duas diferenças que já
+causaram bug: componentes usam `render` no lugar de `asChild`, e
+`Menu.Item` dispara `onClick` — `onSelect` (idiomático do Radix) é ignorado
+em silêncio. `DropdownMenuLabel` mapeia para `Menu.GroupLabel` e **exige** um
+`DropdownMenuGroup` pai; sem ele o popup lança e o React desmonta a árvore
+inteira.
 
 Contexto é o recurso mais escasso. Pedir tudo de uma vez é o que quebra loops.
 
 ## Fases
 
-- **Fase 1** (estamos aqui): layout dark + todos os componentes de UI com
-  dado mockado. Sliders, presets e botões existem e reagem visualmente,
-  mas não tocam em imagem real.
-- **Fase 2**: ler UM arquivo `.dcm` local, extrair tags no console.
-- **Fase 3**: conectar canvas, HU, W/L, MPR.
+- **Fase 1**: casca visual e design system, tudo com dado mockado.
+- **Fase 2**: ler UM arquivo `.dcm` local e extrair tags no console.
+- **Fase 3** (estamos aqui): canvas axial 2D com HU e W/L reais.
+  MPR coronal/sagittal fica **fora** até existir carga de série multi-slice —
+  um único `.dcm` de 1 frame não tem dado para os planos ortogonais.
+- **Fase 4**: carga de diretório/ série, MPR e medição em mm.
 
 Só avance de fase com ordem explícita do usuário.
 
 ## Comandos
 
 ```bash
-npm run dev      # servidor de desenvolvimento
-npm run build    # build de produção
-npm run lint     # lint
-npm run verify   # lint + build + smoke
+npm run dev            # servidor de desenvolvimento
+npm run build          # build de produção
+npm run sample         # gera a fixture sintética em samples/
+npm run verify:sample  # valida a fixture (27 checks)
+npm run verify:volume  # valida HU/W-L/canvas puros (40 checks)
+npm run e2e            # Chrome headless via CDP, porta 3210
+npm run verify         # tsc + build + sample + volume + e2e
 ```
+
+Não existe `npm run lint`. O E2E roda com viewport 1600x1000 porque o headless
+default (800x600) fica abaixo do breakpoint `lg`, onde a sidebar — e o
+`[data-hu]` — ficam ocultos.
 
 ## Ignorar sempre
 

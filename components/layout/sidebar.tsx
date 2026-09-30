@@ -14,6 +14,9 @@ export function Sidebar() {
     <aside className="hidden lg:flex w-72 shrink-0 flex-col border-l border-sidebar-border bg-sidebar text-sidebar-foreground">
       <div className="p-3 border-b border-sidebar-border">
         <h2 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Exame</h2>
+        <div className="mt-2">
+          <FileLoader compact />
+        </div>
       </div>
 
       <div className="flex-1 overflow-auto p-4 flex flex-col gap-6">
@@ -24,9 +27,6 @@ export function Sidebar() {
             <p className="text-[10px] text-muted-foreground">
               Carregue um exame para ver os metadados
             </p>
-            <div className="w-full pt-1">
-              <FileLoader />
-            </div>
           </div>
         ) : (
           <>
@@ -101,8 +101,9 @@ export function Sidebar() {
                   </>
                 ) : (
                   <div className="flex items-baseline gap-1">
-                    {/* Valor MOCK até a fase 2 */}
-                    <span className="font-mono text-2xl text-primary">{cursorHU}</span>
+                    <span className="font-mono text-2xl text-primary" data-hu>
+                      {cursorHU}
+                    </span>
                     <span className="text-[10px] text-muted-foreground tracking-wider">HU</span>
                   </div>
                 )}

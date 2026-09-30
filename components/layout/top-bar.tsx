@@ -14,12 +14,14 @@ import {
 } from "lucide-react";
 import { useViewerStore } from "@/store/use-viewer-store";
 import { TOOL_DESCRIPTIONS, W_L_PRESETS, Tool } from "@/lib/mock-data";
+import { openFilePicker } from "@/lib/dicom/file-picker";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
   DropdownMenuTrigger,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuGroup,
   DropdownMenuLabel,
   DropdownMenuSeparator,
 } from "@/components/ui/dropdown-menu";
@@ -105,19 +107,21 @@ export function TopBar() {
             }
           />
           <DropdownMenuContent>
-            <DropdownMenuLabel>Presets W/L</DropdownMenuLabel>
-            <DropdownMenuSeparator />
-            {W_L_PRESETS.map((p) => (
-              <DropdownMenuItem key={p.id} onSelect={() => setPreset(p)}>
-                <div className="flex flex-col">
-                  <span>{p.name}</span>
-                  <span className="font-mono text-[10px] text-muted-foreground">
-                    W{p.windowWidth} L{p.windowCenter}
-                  </span>
-                  <span className="text-[10px] text-muted-foreground">{p.hint}</span>
-                </div>
-              </DropdownMenuItem>
-            ))}
+            <DropdownMenuGroup>
+              <DropdownMenuLabel>Presets W/L</DropdownMenuLabel>
+              <DropdownMenuSeparator />
+              {W_L_PRESETS.map((p) => (
+                <DropdownMenuItem key={p.id} onClick={() => setPreset(p)}>
+                  <div className="flex flex-col">
+                    <span>{p.name}</span>
+                    <span className="font-mono text-[10px] text-muted-foreground">
+                      W{p.windowWidth} L{p.windowCenter}
+                    </span>
+                    <span className="text-[10px] text-muted-foreground">{p.hint}</span>
+                  </div>
+                </DropdownMenuItem>
+              ))}
+            </DropdownMenuGroup>
           </DropdownMenuContent>
         </DropdownMenu>
 
@@ -128,19 +132,16 @@ export function TopBar() {
           </Button>
         )}
 
-        {/* Upload de arquivos .dcm chega na fase 2 */}
         <Tooltip>
           <TooltipTrigger
             render={
-              <span tabIndex={0}>
-                <Button variant="default" size="sm" disabled>
-                  <Upload className="size-4 mr-1" />
-                  Carregar .dcm
-                </Button>
-              </span>
+              <Button variant="default" size="sm" onClick={openFilePicker}>
+                <Upload className="size-4 mr-1" />
+                Carregar .dcm
+              </Button>
             }
           />
-          <TooltipContent>Upload de arquivos .dcm chega na fase 2</TooltipContent>
+          <TooltipContent>Abrir um arquivo .dcm local</TooltipContent>
         </Tooltip>
 
         {!isExamLoaded && (

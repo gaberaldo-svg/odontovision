@@ -1,37 +1,48 @@
 "use client";
 
 import * as React from "react";
-import { Layers, FileScan } from "lucide-react";
+import { Layers, FileScan, AlertTriangle } from "lucide-react";
 import { ViewportType } from "@/lib/mock-data";
+import { huAt } from "@/lib/dicom/volume";
 import { useViewerStore } from "@/store/use-viewer-store";
 import { Crosshair } from "@/components/viewer/crosshair";
 import { DicomOverlay } from "@/components/viewer/dicom-overlay";
+import { SliceCanvas } from "@/components/viewer/slice-canvas";
 import { Slider } from "@/components/ui/slider";
 
 interface ViewportProps {
   viewport: ViewportType;
 }
 
+/** Coronal e Sagital exigem um volume ao longo de Z, que um .dcm solto nao tem. */
+const NEEDS_VOLUME: ViewportType[] = ["Coronal", "Sagital"];
+
 export function Viewport({ viewport }: ViewportProps) {
   const isExamLoaded = useViewerStore((state) => state.isExamLoaded);
+  const volume = useViewerStore((state) => state.volume);
   const slices = useViewerStore((state) => state.slices);
   const maxSlices = useViewerStore((state) => state.maxSlices);
   const setSlice = useViewerStore((state) => state.setSlice);
   const setCursorHU = useViewerStore((state) => state.setCursorHU);
+  const windowWidth = useViewerStore((state) => state.windowWidth);
+  const windowCenter = useViewerStore((state) => state.windowCenter);
+  const zoomLevel = useViewerStore((state) => state.zoomLevel);
+  const panOffset = useViewerStore((state) => state.panOffset);
 
-  const currentSlice = slices[viewport as keyof typeof slices] || 0;
-  const totalSlices = maxSlices[viewport as keyof typeof maxSlices] || 1;
+  const currentSlice = slices[viewport] || 0;
+  const totalSlices = maxSlices[viewport] || 1;
+  const needsVolume = NEEDS_VOLUME.includes(viewport);
+  const unavailable = isExamLoaded && needsVolume && !volume;
 
-  const handleMouseMove = (e: React.MouseEvent<HTMLDivElement>) => {
-    if (!isExamLoaded) return;
-    const rect = e.currentTarget.getBoundingClientRect();
-    const x = e.clientX - rect.left;
-    // Fase 1: Mock de HU simulando valor radionumerico
-    setCursorHU(-100 + Math.round(x / 2));
+  // HU sob o cursor, lido do volume real.
+  const handleCursorMove = (imageX: number, imageY: number) => {
+    if (!volume || needsVolume) return;
+    const hu = huAt(volume, Math.floor(imageX), Math.floor(imageY), currentSlice);
+    setCursorHU(Number.isNaN(hu) ? null : Math.round(hu));
   };
 
-  const handleMouseLeave = () => {
-    if (!isExamLoaded) return;
+  const handleCursorLeave = () => {
+    if (!volume || needsVolume) return;
     setCursorHU(null);
   };
 
@@ -42,21 +53,34 @@ export function Viewport({ viewport }: ViewportProps) {
           <FileScan className="w-8 h-8 mb-2 text-muted-foreground" />
           <p className="text-xs text-muted-foreground font-medium">Nenhum exame carregado</p>
           <p className="text-[10px] text-muted-foreground/70 mt-1 max-w-[200px]">
-            Arraste arquivos .dcm ou use o botão de exemplo
+            Abra um arquivo .dcm na barra lateral ou use o botão de exemplo
           </p>
         </div>
-      ) : (
-        <div 
-          className="flex-1 relative w-full h-full flex flex-col"
-          onMouseMove={handleMouseMove}
-          onMouseLeave={handleMouseLeave}
-        >
-          {/* Fase 2: container real da imagem será colocado aqui */}
-          <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_center,_var(--tw-gradient-stops))] from-white/5 via-transparent to-transparent opacity-30 pointer-events-none" />
-          
+      ) : unavailable ? (
+        <div className="flex-1 flex flex-col items-center justify-center p-4 text-center">
+          <AlertTriangle className="w-7 h-7 mb-2 text-muted-foreground/70" />
+          <p className="text-xs text-muted-foreground font-medium">{viewport} indisponivel</p>
+          <p className="text-[10px] text-muted-foreground/70 mt-1 max-w-[220px]">
+            Reconstruir este plano exige a serie completa de cortes.
+            Carregue varios arquivos .dcm do mesmo exame.
+          </p>
+        </div>
+      ) : volume && !needsVolume ? (
+        <div className="flex-1 relative w-full h-full flex flex-col">
+          <SliceCanvas
+            volume={volume}
+            slice={currentSlice}
+            windowWidth={windowWidth}
+            windowCenter={windowCenter}
+            zoom={zoomLevel}
+            pan={panOffset}
+            onCursorMove={handleCursorMove}
+            onCursorLeave={handleCursorLeave}
+          />
+
           <DicomOverlay viewport={viewport} slice={currentSlice} totalSlices={totalSlices} />
           <Crosshair />
-          
+
           <div className="absolute bottom-0 left-0 right-0 flex items-center gap-2 px-2 pb-1.5 pt-4 bg-gradient-to-t from-background/80 to-transparent z-20">
             <Layers className="w-3.5 h-3.5 text-muted-foreground shrink-0" />
             <Slider
@@ -73,6 +97,14 @@ export function Viewport({ viewport }: ViewportProps) {
               {currentSlice}
             </span>
           </div>
+        </div>
+      ) : (
+        <div className="flex-1 flex flex-col items-center justify-center p-4 text-center">
+          <FileScan className="w-7 h-7 mb-2 text-muted-foreground/70" />
+          <p className="text-xs text-muted-foreground font-medium">Exame de demonstracao</p>
+          <p className="text-[10px] text-muted-foreground/70 mt-1 max-w-[220px]">
+            Os metadados sao mockados. Abra um arquivo .dcm para ver a imagem real.
+          </p>
         </div>
       )}
     </div>

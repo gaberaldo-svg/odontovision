@@ -1,47 +1,10 @@
 // Cliente do Web Worker de parsing. Mantem uma instancia unica e traduz
-// o protocolo de mensagens em Promises.
+// o protocolo de mensagens em Promises, correlacionando por request-id.
 
-export interface DicomMeta {
-  transferSyntax: string | null;
-  sopClass: string | null;
-  patientName: string | null;
-  patientId: string | null;
-  studyDate: string | null;
-  seriesDescription: string | null;
-  manufacturer: string | null;
-  modality: string | null;
-  rows: number;
-  columns: number;
-  samplesPerPixel: number;
-  numberOfFrames: number;
-  pixelSpacing: number[] | null;
-  sliceThickness: number | null;
-  spacingBetweenSlices: number | null;
-  imagePosition: number[] | null;
-  imageOrientation: number[] | null;
-  rescaleSlope: number;
-  rescaleIntercept: number;
-  rescaleType: string | null;
-  bitsAllocated: number;
-  bitsStored: number;
-  pixelRepresentation: "signed" | "unsigned";
-  windowCenter: number | null;
-  windowWidth: number | null;
-}
+import type { DicomParseResult, WorkerRequest, WorkerResponse } from "./types";
 
-export interface DicomParseResult {
-  ok: true;
-  fileName: string;
-  meta: DicomMeta;
-  pixelData: {
-    offset: number | null;
-    length: number | null;
-    isEncapsulated: boolean;
-    frameBytes: number;
-  };
-  tagCount: number;
-  warnings: string[];
-}
+export type { DicomMeta, DicomParseResult, DicomVolume } from "./types";
+export { huAt, huToGray, autoWindow, sliceToImageData, storedRange } from "./volume";
 
 export class DicomParseError extends Error {
   readonly fileName: string;
@@ -55,18 +18,18 @@ export class DicomParseError extends Error {
 
 let worker: Worker | null = null;
 let seq = 0;
-const pending = new Map<number, { resolve: (r: DicomParseResult) => void; reject: (e: unknown) => void }>();
+const pending = new Map<
+  number,
+  { resolve: (r: DicomParseResult) => void; reject: (e: unknown) => void }
+>();
 
 function getWorker(): Worker {
   if (worker) return worker;
 
   worker = new Worker(new URL("./worker.ts", import.meta.url));
 
-  worker.onmessage = (event: MessageEvent) => {
-    const { id, type, payload } = event.data as
-      | { id: number; type: "result"; payload: DicomParseResult }
-      | { id: number; type: "error"; payload: { fileName: string; message: string } };
-
+  worker.onmessage = (event: MessageEvent<WorkerResponse>) => {
+    const { id, type, payload } = event.data;
     const handlers = pending.get(id);
     if (!handlers) return;
     pending.delete(id);
@@ -76,7 +39,9 @@ function getWorker(): Worker {
   };
 
   worker.onerror = (event) => {
-    for (const [, handlers] of pending) handlers.reject(new Error(event.message));
+    for (const [, handlers] of pending) {
+      handlers.reject(new Error(event.message || "falha no worker de DICOM"));
+    }
     pending.clear();
     worker?.terminate();
     worker = null;
@@ -85,17 +50,23 @@ function getWorker(): Worker {
   return worker;
 }
 
-/** Le um unico arquivo .dcm e devolve os metadados. */
+/** Le um unico arquivo .dcm e devolve metadados + volume. */
 export function parseDicomFile(file: File): Promise<DicomParseResult> {
   return file.arrayBuffer().then((buffer) => parseDicomBuffer(buffer, file.name));
 }
 
 /** Versao com o buffer ja em maos (util para testes). */
-export function parseDicomBuffer(buffer: ArrayBuffer, fileName: string): Promise<DicomParseResult> {
+export function parseDicomBuffer(
+  buffer: ArrayBuffer,
+  fileName: string,
+): Promise<DicomParseResult> {
   const id = ++seq;
   return new Promise<DicomParseResult>((resolve, reject) => {
     pending.set(id, { resolve, reject });
-    getWorker().postMessage({ id, byteArray: buffer, fileName }, [buffer]);
+    const request: WorkerRequest = { id, byteArray: buffer, fileName };
+    // O buffer vai transferido, entao a copia da thread principal e
+    // descartada em vez de clonada.
+    getWorker().postMessage(request, [buffer]);
   });
 }
 

@@ -367,6 +367,31 @@ try {
   mkdirSync(join(ROOT, "docs"), { recursive: true });
   writeFileSync(OUT, Buffer.from(shot.data, "base64"));
   console.log(`preview gravado em ${OUT}`);
+
+  // Segunda imagem, no modo 3D: e o que o programa tem de mais incomum, e o
+  // README mostra as duas.
+  await clicar('[aria-label="Ver 3D"]', null);
+  if (!(await esperar(`document.querySelector('[data-viewport="Volume3D"] canvas')`, 15_000))) {
+    throw new Error("o modo 3D nao abriu para a segunda captura");
+  }
+  // Um limiar de osso mostra estrutura; o padrao (300) ja serve para o phantom,
+  // e girar um pouco tira a vista de frente, que e onde o 3D mais se parece com
+  // "uma imagem" e menos com "um disco".
+  await cdp.send("Input.dispatchMouseEvent", { type: "mousePressed", x: 700, y: 400, button: "left", clickCount: 1 });
+  await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: 810, y: 445, button: "left" });
+  await cdp.send("Input.dispatchMouseEvent", { type: "mouseReleased", x: 810, y: 445, button: "left", clickCount: 1 });
+  await esperar(
+    `(() => { const c = document.querySelector('[data-viewport="Volume3D"] canvas');
+       if (!c) return false;
+       const d = c.getContext('2d').getImageData(0, 0, c.width, c.height).data;
+       for (let i = 0; i < d.length; i += 4) if (d[i] > 0) return true;
+       return false; })()`,
+    20_000,
+  );
+  await sleep(800);
+  const shot3d = await send("Page.captureScreenshot", { format: "png" });
+  writeFileSync(join(ROOT, "docs", "preview-3d.png"), Buffer.from(shot3d.data, "base64"));
+  console.log("preview 3d gravado em docs/preview-3d.png");
 } catch (erro) {
   console.error("falha ao capturar:", erro.message ?? erro);
   process.exitCode = 1;

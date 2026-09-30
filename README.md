@@ -1,11 +1,11 @@
-# OdontoVision
+﻿# OdontoVision
 
 Visualizador de tomografia odontológica (CBCT / DICOM) que roda **inteiro no
 navegador**. Nenhum arquivo de exame sai do computador: não há backend, upload
 nem cadastro. Abrir um `.dcm` e medir sobre ele acontece todo na máquina do
 usuário.
 
-![stacks de três e uma medida](docs/preview.png)
+![Três planos MPR com uma régua medida e uma anotação](docs/preview.png)
 
 ## O que faz
 
@@ -14,6 +14,12 @@ usuário.
   espaçamento entre voxels e o rescale de HU.
 - **Três planos de reconstrução (MPR)** — axial, coronal e sagital, com o
   indicador de posição sincronizado entre os três.
+- **Reconstrução 3D** por *maximum intensity projection*, com limiar em HU,
+  rotação por arraste e zoom. O limiar é o que separa o osso do ar: sem ele a
+  imagem sai preta.
+
+  ![Reconstrução 3D do volume](docs/preview-3d.png)
+
 - **Régua em milímetros**, com a densidade (HU) nas duas pontas e a diferença
   entre elas.
 - **Ângulo em graus**, medido em três cliques, com o HU nos três pontos.
@@ -56,6 +62,19 @@ e o app recusa **nomeando a precisão**, em vez de dizer apenas "comprimido".
 
 ## Decisões técnicas que valem nota
 
+- **O 3D é MIP ortográfico com limiar em HU.** Um raio paralelo por pixel, e
+  fica com o maior HU que passa. É a técnica de sempre em imagem médica; alpha
+  blending daria um visual mais bonito e mais lento, sem revelar estrutura a
+  mais. **O limiar é a interface, não um detalhe**: sem ele o raio para no ar
+  (-1000) e a imagem sai preta.
+- **Raio em perspectiva é o erro óbvio.** Construir o raio "da câmera para o
+  pixel" faz o raio do canto varrer o volume inteiro na diagonal — a imagem
+  ganha osso nos cantos e o limiar deixa de filtrar nada. Ortográfica é
+  paralelos: o que muda por pixel é a origem, no plano da câmera.
+- **O 3D respeita o tamanho físico, como o MPR.** No phantom o eixo z vale
+  1,00 mm por voxel contra 0,25 mm em x e y: sem `voxelSizeMm` o volume
+  apareceria 4× mais alto. É a mesma pegadinha do aspecto dos planos, agora em
+  três eixos.
 - **HU do pixel data encapsulado sai de `planeHuAt`, o mesmo caminho do readout
   sob o cursor.** Ler de outro lugar fazia a régua discordar do número que o
   usuário acabou de ver passando o mouse.
@@ -80,7 +99,7 @@ Sem framework. Cada `scripts/verify-*.mjs` importa a lib com *type-stripping* do
 Node e roda no topo do arquivo.
 
 ```bash
-npm run verify         # tsc + build + fixtures + 335 checks + E2E
+npm run verify         # tsc + build + fixtures + 358 checks + E2E
 npm run verify:sample  # fixture de 1 corte
 npm run verify:volume  # HU, MPR, geometria, medição, ângulo, relatório
 npm run verify:series  # monta a série e confere voxel a voxel
@@ -100,8 +119,8 @@ deslocada a partir do primeiro `0x00`, com os primeiros pixels ainda certos).
 
 ```
 app/                     página e layout
-components/viewer/       canvas 2D, MPR, sobreposição de HU
-components/layout/       barra superior e barra lateral (exame, medidas, relatório)
+components/viewer/       canvas 2D, MPR, 3D e sobreposição de HU
+components/layout/       barra superior, painel principal e barra lateral
 lib/dicom/               núcleo puro, sem React e sem DOM — é o que o Node testa
   types.ts               tipos do DICOM
   parse.ts               leitura de tags e montagem do volume
@@ -109,12 +128,13 @@ lib/dicom/               núcleo puro, sem React e sem DOM — é o que o Node t
   jpeg.ts                JPEG Baseline/Extended via createImageBitmap
   phantom.ts             phantom sintético do botão de exemplo
   volume.ts              HU, W/L, MPR, geometria em mm
+  volume3d.ts            render 3D por MIP com limiar
   measure.ts             régua e ângulo (puros, testáveis)
   annotate.ts            anotações de texto
   report.ts              relatório em texto e CSV
   series.ts              montagem de série multi-arquivo
 store/                   estado (zustand)
-scripts/                 geração de fixture e verificadores
+scripts/                 geração de fixture, verificadores e captura de tela
 ```
 
 `lib/dicom/` não importa React nem toca no DOM. É o que permite testar a
@@ -127,8 +147,13 @@ sem navegador.
   relatório exportado fica.
 - **Só um volume por vez.** Não há registro de pacientes, nem comparação entre
   exames, nem navegação em série temporal.
-- **Não segmenta.** Não há separação automática de estruturas (canal da
-  mandíbula, nervo, dente). A view 3D que um CBCT comercial mostra não está aqui.
+- **O 3D não segmenta.** Ele mostra o pico de HU de cada raio, com um limiar
+  global. Não há separação automática de estruturas — o canal da mandíbula, o
+  nervo e um dente isolado aparecem todos juntos, porque têm densidades
+  parecidas. Isolar uma estrutura é segmentação, e precisa de recorte manual ou
+  de modelo treinado.
+- **O render 3D é JavaScript puro**, sem WebGL. Aguenta o phantom e exames
+  pequenos; um CBCT de 512×512×300 seria lento para arrastar.
 - **Não decodifica JPEG 2000**, que é o formato mais comum em CBCT
   odontológico. Precisa de um decodificador wavelet próprio.
 

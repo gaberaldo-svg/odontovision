@@ -710,5 +710,80 @@ console.log("\n-- phantom do botão de exemplo: metadados, volume e cortes coere
     demo.ok ? `A=${demo.measurement.huA} B=${demo.measurement.huB}` : "recusada");
 }
 
+console.log("\n-- render 3D por MIP: limiar, rotacao e geometria --");
+{
+  const { renderMip, semiExtremos } = await import("../lib/dicom/volume3d.ts");
+  const { phantomVolume } = await import("../lib/dicom/phantom.ts");
+  const pv = phantomVolume();
+  const W = 48, H = 48;
+  const base = { width: W, height: H, yaw: 0, pitch: 0, zoom: 2, limiarHu: 300, windowWidth: 1600, windowCenter: 600 };
+
+  const img = renderMip(pv, base);
+  check("devolve RGBA do tamanho pedido", img.length, W * H * 4);
+  check("alpha opaco em tudo (fundo preto, nao transparente)", img.every((_, i) => i % 4 === 3 ? img[i] === 255 : true), true);
+
+  // O limiar e o que faz a imagem aparecer. O que muda entre -1000 e 300 e a
+  // faixa de tecido mole (120 HU): no ar os dois dão preto, porque a janela
+  // joga -900 para 0. Por isso a comparação conta pixels ACESOS, e nao brilho.
+  const acesos = (d) => { let n = 0; for (let i = 0; i < d.length; i += 4) if (d[i] > 0) n++; return n; };
+  const comAr = renderMip(pv, { ...base, limiarHu: -1000 });
+  const soOsso = renderMip(pv, { ...base, limiarHu: 300 });
+  check("limiar de osso remove a faixa de tecido mole (menos pixels acesos)",
+    acesos(soOsso) < acesos(comAr), `osso=${acesos(soOsso)} ar=${acesos(comAr)}`);
+  check("limiar em -1000 mostra mais que so-osso", acesos(comAr) > acesos(soOsso), true);
+  // Um limiar absurdo tem que dar tela preta: e o que acontece se o usuario
+  // passar o slider para 2500 num exame de osso cortical.
+  const preto = renderMip(pv, { ...base, limiarHu: 9999 });
+  check("limiar acima do maximo do volume dá tela preta", acesos(preto) === 0, `${acesos(preto)}`);
+
+  // Rotacao precisa mudar a imagem: se dois ângulos dessem o mesmo buffer, a
+  // rotacao nao estaria sendo aplicada.
+  const r0 = renderMip(pv, { ...base, yaw: 0, pitch: 0 });
+  const r90 = renderMip(pv, { ...base, yaw: Math.PI / 2, pitch: 0 });
+  let difere = 0;
+  for (let i = 0; i < r0.length; i += 4) if (r0[i] !== r90[i]) difere++;
+  check("girar 90° muda a imagem", difere > W * 2, `${difere} pixels diferentes`);
+  const rIgual = renderMip(pv, { ...base, yaw: 0.4, pitch: 0 });
+  const rIgual2 = renderMip(pv, { ...base, yaw: 0.4, pitch: 0 });
+  check("mesmo ângulo dá exatamente a mesma imagem",
+    rIgual.every((v, i) => v === rIgual2[i]), true);
+
+  // Zoom: aproximar enquadra o NUCLEO denso, que preenche a imagem, entao a
+  // quantidade de pixels acesos SOBE. Afastar enquadra o volume todo e enche a
+  // borda de ar. A propriedade que pega zoom invertido e a direcao: com zoom
+  // invertido, aproximar mostraria o campo largo e o numero cairia.
+  const longe = acesos(renderMip(pv, { ...base, zoom: 1 }));
+  const perto = acesos(renderMip(pv, { ...base, zoom: 4 }));
+  check("aproximar enquadra o nucleo denso (mais pixels acesos)", perto > longe, `longe=${longe} perto=${perto}`);
+  check("afastar enquadra o volume inteiro (minoria acesa)", longe < (W * H) * 0.5, `${longe} de ${W * H}`);
+
+  // GEOMETRIA: e a mesma pegadinha do aspecto MPR, agora em tres eixos. O
+  // phantom tem z a 1,00 mm e x/y a 0,25 mm; um render que ignorasse o
+  // espacamento mostraria o volume 4x mais alto.
+  const semi = semiExtremos(pv);
+  check("meios-extremos em mm batem com voxelSizeMm",
+    `${semi.x.toFixed(2)} ${semi.y.toFixed(2)} ${semi.z.toFixed(2)}`, "8.00 8.00 16.00");
+  // Um volume 64x64x32 voxels com espacamento uniforme NAO e um cubo: o eixo
+  // z tem metade dos voxels. A propriedade que importa e os extremos serem
+  // proporcionais ao tamanho fisico, nao iguais.
+  const iso = { ...pv, pixelSpacing: [1, 1], sliceSpacing: 1 };
+  const sIso = semiExtremos(iso);
+  check("cubo de voxels tem extremos proporcionais aos voxels",
+    `${sIso.x}:${sIso.y}:${sIso.z}`, `${pv.columns}:${pv.rows}:${pv.slices}`);
+  // Com espacamento 1,00 mm o eixo z tem 32 mm e x/y 64 mm. Se um render
+  // usasse pixelSpacing no lugar de sliceSpacing, sairia 16 x 16 x 8.
+  const anisotropo = { ...pv, pixelSpacing: [0.25, 0.25], sliceSpacing: 1 };
+  const sAni = semiExtremos(anisotropo);
+  check("z usa sliceSpacing, não pixelSpacing",
+    `${sAni.x.toFixed(2)} ${sAni.y.toFixed(2)} ${sAni.z.toFixed(2)}`, "8.00 8.00 16.00");
+
+  // Volume vazio: nao pode estourar nem devolver lixo.
+  const vazio = { columns: 0, rows: 0, slices: 0, values: new Int16Array(0), rescaleSlope: 1, rescaleIntercept: 0, sliceSpacing: null, pixelSpacing: null };
+  check("volume vazio não quebra", renderMip(vazio, base).length, W * H * 4);
+  // Um corte so (sem eixo Z) tambem: e o caso de um .dcm de 1 frame.
+  const umCorte = { ...pv, slices: 1, values: pv.values.slice(0, pv.columns * pv.rows) };
+  check("volume de 1 corte não quebra", renderMip(umCorte, base).length, W * H * 4);
+}
+
 console.log(`\n${pass} passaram, ${fail} falharam`);
 process.exit(fail === 0 ? 0 : 1);

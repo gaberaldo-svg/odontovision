@@ -50,9 +50,10 @@ Isso impõe duas regras em `lib/`:
   fora, e um clínico que anota "canal mandibular" e exporta ficava sem o
   rótulo no arquivo.
 - **Fase 6** (estamos aqui): o caminho de **pixel data encapsulado**, com dois
-  decoders: RLE Lossless (feito aqui) e JPEG Baseline/Extended (delegado ao
-  `createImageBitmap` do navegador, **só até 8 bits**). Ainda não há decoder
-  para JPEG 2000, JPEG-LS ou JPEG Lossless.
+  decoders (RLE Lossless próprio, JPEG Baseline/Extended pelo navegador até
+  8 bits), e a **reconstrução 3D por MIP** com limiar de HU, rotação por
+  arraste e zoom. Ainda não há decoder para JPEG 2000, JPEG-LS ou JPEG
+  Lossless, nem segmentação de estruturas.
 
 Só avance de fase com ordem explícita do usuário.
 
@@ -225,6 +226,20 @@ Estas custaram bug real; todas já têm teste.
   apontar para cortes inexistentes e **todo HU saía `NaN`** — inclusive o das
   pontas da régua. Nenhum dos 194 checks pegou: só apareceu numa captura de
   tela. Vale como lembrete de que automação não enxerga o que ninguém olhou.
+- **O 3D é MIP ortográfico, e o limiar de HU é a interface inteira.** Um raio
+  **paralelo** por pixel, quedado com o maior HU que passa. Alpha blending daria
+  um visual mais bonito e mais lento sem revelar estrutura a mais.
+  - **Raio em perspectiva é o erro óbvio**: construir o raio "da câmera para o
+    pixel" faz o raio do canto varrer o volume na diagonal, o osso aparece nos
+    cantos e o limiar deixa de filtrar nada. Os 5 primeiros checks de 3D
+    falharam **todos** por isso, com a imagem 100% branca.
+  - **`R^T·(0,0,-1) = (-r2[0], -r2[1], -r2[2])`**, nessa ordem. Escrever
+    `(-r2[2], -r2[1], -r2[0])` dá um raio em -X e a imagem sai toda preta.
+  - **A janela tem que ser a mesma do 2D** (`windowCenter ± windowWidth/2`).
+    Escrever a janela como "distância até a borda" dá 255 em todo pixel,
+    independente do limiar.
+  - O 3D respeita `voxelSizeMm`: sem isso o phantom sairia 4× mais alto, a
+    mesma pegadinha do aspecto MPR em três eixos.
 - **Quem roda o app em script precisa esperar a HIDRATAÇÃO, não o
   carregamento.** `Page.loadEventFired` e `readyState === "complete"` chegam
   antes do React montar: a página mostra o HTML do servidor e todo clique — do
@@ -248,7 +263,7 @@ npm run sample           # gera a fixture de 1 corte em samples/
 npm run sample:series    # gera a série de 32 cortes + a variante multiframe
 npm run fetch:real       # baixa DICOMs REAIS de teste em samples/real/ (ver abaixo)
 npm run verify:sample    # valida a fixture de 1 corte (91 checks)
-npm run verify:volume    # valida HU/W-L/MPR/medicao/angulo/relatorio/anotacao/phantom puros (203 checks)
+npm run verify:volume    # valida HU/W-L/MPR/medicao/angulo/relatorio/anotacao/phantom/3D puros (217 checks)
 npm run verify:series    # monta a série real e confere voxel a voxel (50 checks)
 npm run e2e              # Chrome headless via CDP, porta 3210
 node scripts/capture-preview.mjs   # gera docs/preview.png (monta, sobe, mede, fotografa)

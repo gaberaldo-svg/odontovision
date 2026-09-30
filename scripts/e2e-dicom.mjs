@@ -195,7 +195,10 @@ try {
       title: document.title,
       hasFileLoader: !!document.querySelector('input[type=file]'),
       accept: document.querySelector('input[type=file]')?.accept ?? null,
-      botoes: [...document.querySelectorAll('button')].map(b => b.textContent.trim()).filter(Boolean).slice(0, 6),
+      // Lista inteira, sem cortar: o check abaixo procura por "some", e limitar
+      // em 6 quebrou o teste da vez que o cabecalho ganhou os botoes de modo
+      // (MPR/3D) -- "Pasta" saiu da janela sem ninguem mexer nela.
+      botoes: [...document.querySelectorAll('button')].map(b => b.textContent.trim()).filter(Boolean),
       canvasAntes: document.querySelectorAll('canvas').length,
     }))()`,
     returnByValue: true,
@@ -1603,6 +1606,145 @@ try {
         encapsulatedPixelData([new Uint8Array(jpeg)]),
       ],
     ));
+  }
+
+  // --- 3D por MIP ---
+  // O render e JS puro, entao o E2E confere o que importa: o modo existe, o
+  // canvas pinta alguma coisa (uma imagem toda preta passaria numa checagem de
+  // "o canvas existe"), o limiar muda o resultado e o arraste rotaciona.
+  console.log("\n-- 3D: reconstrucao por MIP, limiar e rotacao --");
+  {
+    const clicar3d = async (sel) => {
+      const { result } = await cdp.send("Runtime.evaluate", {
+        expression: `(() => {
+          const el = document.querySelector(${JSON.stringify(sel)});
+          if (!el) return null;
+          const r = el.getBoundingClientRect();
+          return { x: Math.round(r.x + r.width/2), y: Math.round(r.y + r.height/2) };
+        })()`,
+        returnByValue: true,
+      });
+      if (!result.value) throw new Error(`alvo 3D ausente: ${sel}`);
+      for (const type of ["mousePressed", "mouseReleased"]) {
+        await cdp.send("Input.dispatchMouseEvent", {
+          type, x: result.value.x, y: result.value.y, button: "left", clickCount: 1,
+        });
+      }
+      await sleep(600);
+    };
+
+    // O botao de modo vive no cabecalho, fora do fluxo MPR.
+    await clicar3d('[aria-label="Ver 3D"]');
+    const modo = (await cdp.send("Runtime.evaluate", {
+      expression: `document.querySelector('[data-view-mode]')?.dataset.viewMode ?? null`,
+      returnByValue: true,
+    })).result.value;
+    check("modo 3D ativado", modo === "3d", String(modo));
+    check("viewport 3D existe", (await cdp.send("Runtime.evaluate", {
+      expression: `!!document.querySelector('[data-viewport="Volume3D"]')`,
+      returnByValue: true,
+    })).result.value === true);
+    check("os viewports MPR sairam da tela no modo 3D", (await cdp.send("Runtime.evaluate", {
+      expression: `document.querySelectorAll('[data-viewport="Axial"]').length === 0`,
+      returnByValue: true,
+    })).result.value === true);
+
+    // Amostra o conteudo do canvas 3D: conta de pixels claros, o que
+    // distingue "reconstruiu" de "tela preta".
+    const contarAcesos = async () => (await cdp.send("Runtime.evaluate", {
+      expression: `(() => {
+        const c = document.querySelector('[data-viewport="Volume3D"] canvas');
+        if (!c) return null;
+        const ctx = c.getContext('2d');
+        const d = ctx.getImageData(0, 0, c.width, c.height).data;
+        let acesos = 0;
+        for (let i = 0; i < d.length; i += 4) if (d[i] > 0) acesos++;
+        return { acesos, total: d.length / 4, w: c.width, h: c.height };
+      })()`,
+      returnByValue: true,
+    })).result.value;
+
+    const comOsso = await contarAcesos();
+    check("o 3D renderizou algo visivel", comOsso && comOsso.acesos > 100,
+      comOsso ? `${comOsso.acesos} acesos de ${comOsso.total}` : "sem canvas");
+    check("a 3D nao esta toda branca (senao o limiar nao filtra nada)",
+      comOsso && comOsso.acesos < comOsso.total * 0.95,
+      comOsso ? `${((comOsso.acesos / comOsso.total) * 100).toFixed(0)}% acesos` : "");
+
+    // Limiar no maximo: tudo acima da estrutura, tela preta.
+    const limiarAlto = await cdp.send("Runtime.evaluate", {
+      expression: `(() => {
+        const el = document.querySelector('[aria-label="Limiar de HU"]');
+        const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+        setter.call(el, '2500');
+        el.dispatchEvent(new Event('input', { bubbles: true }));
+        return true;
+      })()`,
+      returnByValue: true,
+    });
+    void limiarAlto;
+    await sleep(1200);
+    const semOsso = await contarAcesos();
+    check("limiar alto esvazia a imagem", semOsso && semOsso.acesos === 0,
+      semOsso ? `${semOsso.acesos} acesos` : "");
+    check("o atributo do limiar acompanhou o slider",
+      (await cdp.send("Runtime.evaluate", {
+        expression: `document.querySelector('[data-viewport="Volume3D"]')?.dataset['3dThreshold'] ?? null`,
+        returnByValue: true,
+      })).result.value === "2500");
+
+    // Volta para um limiar que mostra osso e mede a rotacao.
+    await cdp.send("Runtime.evaluate", {
+      expression: `(() => {
+        const el = document.querySelector('[aria-label="Limiar de HU"]');
+        const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+        setter.call(el, '300');
+        el.dispatchEvent(new Event('input', { bubbles: true }));
+      })()`,
+    });
+    await sleep(1200);
+
+    const pos3d = (await cdp.send("Runtime.evaluate", {
+      expression: `(() => {
+        const el = document.querySelector('[data-viewport="Volume3D"] canvas');
+        const r = el.getBoundingClientRect();
+        return { x: Math.round(r.x + r.width/2), y: Math.round(r.y + r.height/2) };
+      })()`,
+      returnByValue: true,
+    })).result.value;
+
+    await cdp.send("Input.dispatchMouseEvent", {
+      type: "mousePressed", x: pos3d.x, y: pos3d.y, button: "left", clickCount: 1,
+    });
+    await cdp.send("Input.dispatchMouseEvent", {
+      type: "mouseMoved", x: pos3d.x + 120, y: pos3d.y + 40, button: "left",
+    });
+    await cdp.send("Input.dispatchMouseEvent", {
+      type: "mouseReleased", x: pos3d.x + 120, y: pos3d.y + 40, button: "left", clickCount: 1,
+    });
+    await sleep(1200);
+
+    const yawDepois = (await cdp.send("Runtime.evaluate", {
+      expression: `document.querySelector('[data-viewport="Volume3D"]')?.dataset['3dYaw'] ?? null`,
+      returnByValue: true,
+    })).result.value;
+    check("o arraste girou a cena", yawDepois !== null && Math.abs(Number(yawDepois) + 0.7) > 0.05,
+      `yaw=${yawDepois}`);
+    const depoisDoGiro = await contarAcesos();
+    check("girar mudou a imagem renderizada",
+      depoisDoGiro && comOsso && depoisDoGiro.acesos !== comOsso.acesos,
+      `antes=${comOsso?.acesos} depois=${depoisDoGiro?.acesos}`);
+
+    // Volta para MPR: o resto do E2E depende das tres vistas.
+    await clicar3d('[aria-label="Ver MPR"]');
+    check("voltou para MPR", (await cdp.send("Runtime.evaluate", {
+      expression: `document.querySelector('[data-view-mode]')?.dataset.viewMode === 'mpr'`,
+      returnByValue: true,
+    })).result.value === true);
+    check("os tres viewports voltaram", (await cdp.send("Runtime.evaluate", {
+      expression: `document.querySelectorAll('[data-viewport="Axial"]').length === 1`,
+      returnByValue: true,
+    })).result.value === true);
   }
 
   check("nenhuma excecao na pagina apos a serie", pageErrors.length === 0,

@@ -1,0 +1,8 @@
+# Os 16 commits foram feitos por um agente rodando localmente, com um autor que
+# não corresponde a nenhuma conta do GitHub. Sem este arquivo, o GitHub mostra
+# "unknown author" e o gráfico de contribuições fica vazio.
+#
+# `.mailmap` associa um e-mail a outro SEM reescrever o histórico: os SHA dos
+# commits continuam exatamente os mesmos. Reescrever com filter-branch trocaria
+# todos os SHA e é justamente o que "histórico intacto" pede para não fazer.
+opencode <opencode@local> gaberaldo-svg <gaberaldo-svg@users.noreply.github.com>

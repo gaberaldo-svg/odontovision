@@ -1,0 +1,22 @@
+node_modules/
+.next/
+out/
+dist/
+dist-smoke/
+build/
+.turbo/
+*.tsbuildinfo
+
+# nunca indexar exame no contexto do agente
+*.dcm
+*.dicom
+*.zip
+public/samples/
+data/
+samples/
+
+*.log
+.env
+.env.local
+.agent-workspace/
+.git/

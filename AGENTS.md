@@ -219,6 +219,22 @@ Estas custaram bug real; todas já têm teste.
   montado com `scripts/lib/dicom-writer.mjs`, o mesmo writer das fixtures:
   reimplementar o grupo 0002 dentro do E2E deu "missing required meta header
   attribute 0002,0010", que era erro do arquivo de teste, não do app.
+- **O botão "Exemplo" tem que gerar metadados, volume e contagem de cortes a
+  partir da MESMA fonte** (`lib/dicom/phantom.ts`). Misturar o volume de
+  64×64×32 com os cortes do `MOCK_SLICE_COUNT` (180/512/512) fazia o slider
+  apontar para cortes inexistentes e **todo HU saía `NaN`** — inclusive o das
+  pontas da régua. Nenhum dos 194 checks pegou: só apareceu numa captura de
+  tela. Vale como lembrete de que automação não enxerga o que ninguém olhou.
+- **Quem roda o app em script precisa esperar a HIDRATAÇÃO, não o
+  carregamento.** `Page.loadEventFired` e `readyState === "complete"` chegam
+  antes do React montar: a página mostra o HTML do servidor e todo clique — do
+  CDP ou do próprio DOM — é aceito sem chegar em handler. O sinal de
+  hidratação é `__reactFiber` no elemento.
+- **No Windows, `spawn(..., { shell: true }).kill()` mata só o `cmd.exe`.** O
+  `next start` fica vivo, segura a porta, e a execução seguinte conversa com
+  um servidor que serve o build antigo enquanto o disco já tem o novo — o
+  sintoma é `ChunkLoadError` num chunk que "existe", e parece falha de build.
+  Use `taskkill /PID <pid> /T /F` e uma porta diferente por execução.
 - `data-hu` é um atributo **sem valor**; o número está no `textContent`. Ler
   `dataset.hu` dá `Number("") === 0` e o check passa com o HU errado.
 - `Sagital` é o nome da viewport; `"sagittal"` é o valor interno de `Plane`.
@@ -232,9 +248,10 @@ npm run sample           # gera a fixture de 1 corte em samples/
 npm run sample:series    # gera a série de 32 cortes + a variante multiframe
 npm run fetch:real       # baixa DICOMs REAIS de teste em samples/real/ (ver abaixo)
 npm run verify:sample    # valida a fixture de 1 corte (91 checks)
-npm run verify:volume    # valida HU/W-L/MPR/medicao/angulo/relatorio/anotacao puros (194 checks)
+npm run verify:volume    # valida HU/W-L/MPR/medicao/angulo/relatorio/anotacao/phantom puros (203 checks)
 npm run verify:series    # monta a série real e confere voxel a voxel (50 checks)
 npm run e2e              # Chrome headless via CDP, porta 3210
+node scripts/capture-preview.mjs   # gera docs/preview.png (monta, sobe, mede, fotografa)
 npm run verify           # tsc + build + sample + volume + series + e2e
 ```
 

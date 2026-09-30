@@ -4,6 +4,7 @@ import type { DicomMeta, DicomVolume, Plane } from "@/lib/dicom/types";
 import { autoWindow } from "@/lib/dicom/volume";
 import { buildAngleMeasurement, buildMeasurement, type Measurement, type MeasureError } from "@/lib/dicom/measure";
 import { buildAnnotation, type Annotation } from "@/lib/dicom/annotate";
+import { phantomMetadata, phantomSliceCount, phantomVolume } from "@/lib/dicom/phantom";
 
 /** Voxel apontado pelos tres viewports ao mesmo tempo. */
 export interface Crosshair {
@@ -287,21 +288,30 @@ export const useViewerStore = create<ViewerState>((set) => ({
 
   toggleSidebar: () => set((state) => ({ isSidebarOpen: !state.isSidebarOpen })),
 
-  loadDemoExam: () => set({
-    metadata: MOCK_EXAM,
-    dicomMeta: null,
-    volume: null,
-    seriesInfo: null,
-    isExamLoaded: true,
-    maxSlices: MOCK_SLICE_COUNT,
-    isDemoLoaded: true,
-    loadError: null,
-    slices: {
-      Axial: Math.floor(MOCK_SLICE_COUNT.Axial / 2),
-      Coronal: Math.floor(MOCK_SLICE_COUNT.Coronal / 2),
-      Sagital: Math.floor(MOCK_SLICE_COUNT.Sagital / 2),
-    },
-  }),
+  loadDemoExam: () => {
+    // Metadados, volume e contagem de cortes saem todos do MESMO phantom. Antes
+    // eles vinham de fontes diferentes (`MOCK_EXAM` dizia 512x512x180 e o
+    // volume era 64x64x32), e o resultado era o slider apontando para cortes
+    // que nao existiam -- todo HU saia NaN, o que so apareceu numa captura de
+    // tela. Coerencia aqui vale mais que constante compartilhada.
+    const volume = phantomVolume();
+    const cortes = phantomSliceCount();
+    set({
+      metadata: phantomMetadata(),
+      dicomMeta: null,
+      volume,
+      seriesInfo: null,
+      isExamLoaded: true,
+      maxSlices: cortes,
+      isDemoLoaded: true,
+      loadError: null,
+      slices: {
+        Axial: Math.floor(cortes.Axial / 2),
+        Coronal: Math.floor(cortes.Coronal / 2),
+        Sagital: Math.floor(cortes.Sagital / 2),
+      },
+    });
+  },
 
 loadVolume: (meta, volume, series) => set((state) => {
     // Com volume de verdade os tres planos abrem: Coronal percorre Y e

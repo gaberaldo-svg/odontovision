@@ -46,29 +46,17 @@ const BLOB_Z0 = 8;
 const BLOB_Z1 = 23;
 
 /** Raio do nucleo denso no corte z: cresce linearmente de 6 para 12 px. */
-export function denseRadiusAt(z) {
-  return 6 + 6 * (z / (SLICES - 1));
-}
-
 /**
- * HU do voxel (x, y, z). Ruido deterministico de +/-2 para a textura nao ficar
- * chapada sem debilitating os asserts (que toleram 3 HU).
+ * A geometria do phantom vive em `lib/dicom/phantom.ts`, e nao aqui: o botao
+ * de "exame de exemplo" do app gera o MESMO volume em memoria, e o E2E compara
+ * os dois voxel a voxel. Duas copias divergiriam em silencio -- ja aconteceu
+ * durante o desenvolvimento, com o blob em z 10..20 aqui e 8..23 na lib.
+ *
+ * `import` E `export`: o `export ... from` sozinho nao cria binding local, e
+ * este proprio script chama `huAtVoxel` ao montar o volume.
  */
-export function huAtVoxel(x, y, z) {
-  let hu;
-  const rBlob = Math.hypot(x - BLOB_X, y - BLOB_Y);
-  if (z >= BLOB_Z0 && z <= BLOB_Z1 && rBlob < BLOB_R) {
-    hu = HU_DENSE;
-  } else {
-    const r = Math.hypot(x - CX, y - CY);
-    const dense = denseRadiusAt(z);
-    if (r < dense) hu = HU_DENSE;
-    else if (r < dense + 3) hu = HU_SHELL;
-    else if (r < 22) hu = HU_SOFT;
-    else hu = HU_AIR;
-  }
-  return hu + (((x * 7 + y * 13 + z * 29) % 5) - 2);
-}
+import { huAtVoxel, denseRadiusAt } from "../lib/dicom/phantom.ts";
+export { huAtVoxel, denseRadiusAt };
 
 /** Volume completo em ordem [z][y][x]. */
 function buildVolume() {

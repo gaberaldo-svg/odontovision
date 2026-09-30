@@ -165,6 +165,10 @@ export function TopBar() {
           size="icon"
           onClick={toggleSidebar}
           className={isSidebarOpen ? "bg-accent" : ""}
+          // Botao so com icone: sem nome acessivel o leitor de tela anuncia
+          // "botao" e nao diz o que ele faz.
+          aria-label="Alternar barra lateral"
+          aria-pressed={isSidebarOpen}
         >
           <PanelRight className="size-4" />
         </Button>

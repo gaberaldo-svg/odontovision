@@ -670,5 +670,45 @@ check("volume vazio recusa o ponto", buildAnnotation(
   { columns: 0, rows: 0, slices: 0, values: new Int16Array(0), rescaleSlope: 1, rescaleIntercept: 0, sliceSpacing: null, pixelSpacing: null },
   "axial", 0, 0, 0, "x", 1).error, "fora-do-plano");
 
+console.log("\n-- phantom do botão de exemplo: metadados, volume e cortes coerentes --");
+// Este bloco existe porque o bug apareceu numa CAPTURA DE TELA, não num teste:
+// o demo misturava o volume de 64x64x32 com os cortes do mock (180/512/512), o
+// slider apontava para cortes inexistentes e todo HU saía NaN. Os 335 checks
+// passavam. Um teste de coerência pega a próxima vez.
+{
+  const { phantomVolume, phantomMetadata, phantomSliceCount } =
+    await import("../lib/dicom/phantom.ts");
+  const pv = phantomVolume();
+  const pm = phantomMetadata();
+  const pc = phantomSliceCount();
+
+  check("volume é 64x64x32",
+    `${pv.columns}x${pv.rows}x${pv.slices}`, "64x64x32");
+  check("metadados batem com o volume",
+    pm.matrixDimensions.join("x"), `${pv.columns}x${pv.rows}x${pv.slices}`);
+  check("cortes batem com o volume",
+    `${pc.Axial}x${pc.Coronal}x${pc.Sagital}`, `${pv.slices}x${pv.rows}x${pv.columns}`);
+  // O ponto do bug: um corte do meio do axial tem que existir no volume.
+  const meio = Math.floor(pc.Axial / 2);
+  check("o corte do meio do axial existe no volume",
+    meio >= 0 && meio < pv.slices, `${meio} < ${pv.slices}`);
+  check("HU do corte do meio não é NaN", Number.isFinite(planeHuAt(pv, "axial", meio, 32, 32)), true);
+  // E o voxelSize do metadado tem que ser o do volume, senão o relatório
+  // anuncia uma resolução que a imagem não tem.
+  check("voxelSize bate com o volume",
+    pm.voxelSize[0] === pv.pixelSpacing?.[0] && pm.voxelSize[2] === pv.sliceSpacing,
+    `${pm.voxelSize.join(" x ")} vs ${pv.pixelSpacing?.join(" x ")} x ${pv.sliceSpacing}`);
+  check("sliceThickness bate com o sliceSpacing",
+    pm.sliceThickness, pv.sliceSpacing);
+  // A medição no corte do meio do demo tem que dar número, não NaN: é a
+  // exata combinação que a captura mostrou quebrada.
+  const demo = buildMeasurement(pv, "axial", meio, { u: 12, v: 40 }, { u: 48, v: 26 }, 1);
+  check("régua no corte do meio dá mm finito",
+    demo.ok && Number.isFinite(demo.measurement.distanceMm), demo.ok ? String(demo.measurement.distanceMm) : "recusada");
+  check("régua no corte do meio dá HU finito",
+    demo.ok && Number.isFinite(demo.measurement.huA) && Number.isFinite(demo.measurement.huB),
+    demo.ok ? `A=${demo.measurement.huA} B=${demo.measurement.huB}` : "recusada");
+}
+
 console.log(`\n${pass} passaram, ${fail} falharam`);
 process.exit(fail === 0 ? 0 : 1);

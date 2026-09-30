@@ -4,7 +4,7 @@ import { useViewerStore } from "@/store/use-viewer-store";
 import { FileScan, Lock, X } from "lucide-react";
 import type { Plane } from "@/lib/dicom/types";
 import type { MeasureError } from "@/lib/dicom/measure";
-import { formatMm } from "@/lib/format";
+import { formatDeltaHu, formatMm } from "@/lib/format";
 import { Separator } from "@/components/ui/separator";
 import { FileLoader } from "@/components/layout/file-loader";
 
@@ -162,28 +162,41 @@ export function Sidebar() {
                   {measurements.map((m) => (
                     <li
                       key={m.id}
-                      className="flex items-center justify-between gap-2 rounded border border-sidebar-border bg-background px-2 py-1.5"
+                      className="flex flex-col gap-0.5 rounded border border-sidebar-border bg-background px-2 py-1.5"
                       data-measure=""
                       data-mm={m.distanceMm}
+                      data-hu-a={m.huA}
+                      data-hu-b={m.huB}
+                      data-delta-hu={m.deltaHu}
                       data-measure-plane={m.plane}
                       data-measure-slice={m.slice}
                     >
-                      <span className="font-mono text-[11px] text-muted-foreground">
-                        {PLANO_LABEL[m.plane]} {m.slice}
-                      </span>
-                      <span className="flex items-center gap-1.5">
-                        <span className="font-mono text-[11px] text-primary">
-                          {formatMm(m.distanceMm)}
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="font-mono text-[11px] text-muted-foreground">
+                          {PLANO_LABEL[m.plane]} {m.slice}
                         </span>
-                        <button
-                          type="button"
-                          aria-label={`Remover medicao de ${formatMm(m.distanceMm)}`}
-                          onClick={() => removeMeasurement(m.id)}
-                          className="text-muted-foreground hover:text-foreground"
-                        >
-                          <X className="size-3" />
-                        </button>
-                      </span>
+                        <span className="flex items-center gap-1.5">
+                          <span className="font-mono text-[11px] text-primary">
+                            {formatMm(m.distanceMm)}
+                          </span>
+                          <button
+                            type="button"
+                            aria-label={`Remover medicao de ${formatMm(m.distanceMm)}`}
+                            onClick={() => removeMeasurement(m.id)}
+                            className="text-muted-foreground hover:text-foreground"
+                          >
+                            <X className="size-3" />
+                          </button>
+                        </span>
+                      </div>
+                      {/* Densidade das duas pontas e a diferenca: e o que separa
+                          osso cortical de medular numa regua. */}
+                      <div className="flex items-center justify-between gap-2 font-mono text-[10px]">
+                        <span className="text-muted-foreground">
+                          {m.huA} &rarr; {m.huB} HU
+                        </span>
+                        <span className="text-primary">&Delta;{formatDeltaHu(m.deltaHu)}</span>
+                      </div>
                     </li>
                   ))}
                 </ul>

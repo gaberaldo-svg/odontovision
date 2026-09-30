@@ -730,6 +730,9 @@ try {
         mm: Number(el.dataset.mm),
         plano: el.dataset.measurePlane,
         corte: Number(el.dataset.measureSlice),
+        huA: Number(el.dataset.huA),
+        huB: Number(el.dataset.huB),
+        delta: Number(el.dataset.deltaHu),
         texto: el.textContent.trim(),
       })))()`,
       returnByValue: true,
@@ -868,6 +871,94 @@ try {
   check("lista vazia depois de limpar", (await lerMedicoes()).length === 0);
   check("nenhuma regua no canvas", Object.values(await lerRegras()).every((n) => n === 0),
     JSON.stringify(await lerRegras()));
+
+  // --- HU nas pontas e delta ---
+  // O invariant que importa: o HU da ponta tem que ser exatamente o numero que
+  // o readout mostra quando o cursor passa no mesmo voxel. Se a regua lesse o
+  // HU por outro caminho, ela discordaria do dado que o usuario confere.
+  console.log("\n-- a regua le o HU dos dois pontos --");
+  const corteDaMedida = (await lerViewports()).Axial?.valor;
+  await cliqueNoVoxel("Axial", 10, 10);
+  await cliqueNoVoxel("Axial", 22, 26);
+  const comHu = (await lerMedicoes()).at(-1);
+  // axial: u=x, v=y, corte = z.
+  const huAesperado = huAtVoxel(10, 10, corteDaMedida);
+  const huBesperado = huAtVoxel(22, 26, corteDaMedida);
+  check("HU da ponta A confere com o phantom", comHu?.huA === huAesperado,
+    `regua=${comHu?.huA} phantom=${huAesperado}`);
+  check("HU da ponta B confere com o phantom", comHu?.huB === huBesperado,
+    `regua=${comHu?.huB} phantom=${huBesperado}`);
+  check("delta = ponta B menos ponta A", comHu?.delta === huBesperado - huAesperado,
+    `delta=${comHu?.delta} esperado=${huBesperado - huAesperado}`);
+  check("sidebar mostra os dois HU", new RegExp(`${huAesperado}.*${huBesperado} HU`).test(comHu?.texto ?? ""),
+    comHu?.texto ?? "");
+
+  // Passa o cursor pela ponta A e compara com o que a regua guardou.
+  const naPontaA = await mouseNoVoxel("Axial", 10, 10);
+  check("readout sob o cursor = HU da ponta A", paraNum(naPontaA.texto) === comHu?.huA,
+    `cursor=${naPontaA.texto} regua=${comHu?.huA}`);
+  const naPontaB = await mouseNoVoxel("Axial", 22, 26);
+  check("readout sob o cursor = HU da ponta B", paraNum(naPontaB.texto) === comHu?.huB,
+    `cursor=${naPontaB.texto} regua=${comHu?.huB}`);
+
+  // --- o delta tem sinal, e a ordem decide o sinal ---
+  console.log("\n-- o delta troca de sinal com a ordem dos pontos --");
+  await apertarEsc();
+  await cliqueNoVoxel("Axial", 22, 26);
+  await cliqueNoVoxel("Axial", 10, 10);
+  const invertida = (await lerMedicoes()).at(-1);
+  check("mesmo comprimento medido ao contrario", invertida?.mm === comHu?.mm,
+    `mm=${invertida?.mm}`);
+  check("pontas trocadas de lugar", invertida?.huA === comHu?.huB && invertida?.huB === comHu?.huA,
+    `${invertida?.huA}->${invertida?.huB}`);
+  check("delta com sinal invertido", invertida?.delta === -comHu?.delta,
+    `delta=${invertida?.delta} esperado=${-comHu?.delta}`);
+  check("delta negativo aparece com o sinal", invertida?.delta < 0 ? /-\d+ HU/.test(invertida?.texto ?? "") : true,
+    invertida?.texto ?? "");
+
+  // --- HU no coronal: o eixo v e z, e o HU do ponto tem que acompanhar ---
+  console.log("\n-- HU no coronal: a ponta em v le z --");
+  await apertarEsc();
+  // Dois pontos no MESMO u e em v diferentes: se v lesse y em vez de z, os
+  // dois cairiam no mesmo voxel e o teste passaria sem ver nada. A varredura
+  // escolhe um v cujo HU e de fato diferente, senao o par seria ar nos dois.
+  const yCorr = (await lerViewports()).Coronal?.valor;
+  const U = 32;
+  const huBase = huAtVoxel(U, yCorr, corteDaMedida);
+  const outroV = [...Array(32).keys()]
+    .map((z) => (corteDaMedida + 1 + z) % 32)
+    .find((z) => huAtVoxel(U, yCorr, z) !== huBase);
+  check("achou um z com HU diferente do corte da medida", outroV !== undefined,
+    `huBase=${huBase}`);
+  await cliqueNoVoxel("Coronal", U, corteDaMedida);
+  await cliqueNoVoxel("Coronal", U, outroV);
+  const corHu = (await lerMedicoes()).at(-1);
+  // coronal: u=x, v=z, corte = y.
+  check("HU da ponta em v confere com o phantom", corHu?.huB === huAtVoxel(U, yCorr, outroV),
+    `regua=${corHu?.huB} phantom=${huAtVoxel(U, yCorr, outroV)}`);
+  check("as duas pontas tem HU diferente", corHu?.huA !== corHu?.huB,
+    `${corHu?.huA} vs ${corHu?.huB}`);
+  check("delta no coronal bate", corHu?.delta === corHu?.huB - corHu?.huA,
+    `delta=${corHu?.delta}`);
+  // E o mesmo no eixo u: dois pontos com o mesmo v e u diferentes tambem tem
+  // que diferir, provando que o eixo horizontal nao esta hardcoded.
+  await apertarEsc();
+  const huBaseU = huAtVoxel(U, yCorr, outroV);
+  const outroU = [...Array(64).keys()]
+    .map((x) => (U + 1 + x) % 64)
+    .find((x) => huAtVoxel(x, yCorr, outroV) !== huBaseU);
+  check("achou um x com HU diferente", outroU !== undefined, `huBaseU=${huBaseU}`);
+  await cliqueNoVoxel("Coronal", U, outroV);
+  await cliqueNoVoxel("Coronal", outroU, outroV);
+  const corHuU = (await lerMedicoes()).at(-1);
+  check("HU da ponta em u confere", corHuU?.huA === huAtVoxel(U, yCorr, outroV),
+    `regua=${corHuU?.huA} phantom=${huAtVoxel(U, yCorr, outroV)}`);
+  check("pontas no eixo u tem HU diferente", corHuU?.huA !== corHuU?.huB,
+    `${corHuU?.huA} vs ${corHuU?.huB}`);
+
+  const limparHu = await realClick("button", "limpar todas");
+  check("cleanup: limpar todas", !limparHu.erro, limparHu.erro ?? "");
+  check("lista vazia no fim", (await lerMedicoes()).length === 0);
 
   check("nenhuma excecao na pagina apos a serie", pageErrors.length === 0,
     pageErrors.join(" | ").slice(0, 200));

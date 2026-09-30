@@ -85,8 +85,9 @@ const cancelMeasureDraft = useViewerStore((state) => state.cancelMeasureDraft);
       from: measureDraft,
       to: hover,
       distanceMm: hover ? planeDistanceMm(volume, plane, measureDraft, hover) : null,
+      huA: Math.round(planeHuAt(volume, plane, currentSlice, measureDraft.u, measureDraft.v)),
     };
-  }, [volume, caliper, measureDraft, hover, plane]);
+  }, [volume, caliper, measureDraft, hover, plane, currentSlice]);
 
   // HU sob o cursor, lido do volume real no plano que esta em foco.
   const handleHover = (u: number, v: number) => {

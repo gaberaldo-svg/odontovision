@@ -1,10 +1,11 @@
 import type { DicomVolume, Plane } from "./types";
-import { planeDimensions, planeDistanceMm } from "./volume.ts";
+import { planeDimensions, planeDistanceMm, planeHuAt } from "./volume.ts";
 
 /**
- * Uma regua: dois pontos de um mesmo plano e o comprimento em mm.
+ * Uma regua: dois pontos de um mesmo plano, o comprimento em mm e a densidade
+ * em cada ponta.
  *
- * A medicao pertence ao plano e ao corte onde foi feita. Ela nao viaja para os
+ * A medida pertence ao plano e ao corte onde foi feita. Ela nao viaja para os
  * outros planos nem para os outros cortes, como num viewer de PACS -- trocar de
  * corte esconde a regua em vez de a projetar em um lugar onde ela nunca foi
  * desenhada.
@@ -17,6 +18,11 @@ export interface Measurement {
   a: { u: number; v: number };
   b: { u: number; v: number };
   distanceMm: number;
+  /** HU na ponta A e na ponta B, com sinal. */
+  huA: number;
+  huB: number;
+  /** `huB - huA`, com sinal: positivo quando a ponta B e mais densa. */
+  deltaHu: number;
 }
 
 /** Por que um clique nao virou medicao. Vira mensagem na UI e caso de teste. */
@@ -32,6 +38,8 @@ export interface MeasureDraft {
   /** Onde o ponteiro esta agora, ou null se ainda nao passou sobre a imagem. */
   to: { u: number; v: number } | null;
   distanceMm: number | null;
+  /** HU da origem, para a previa mostrar a densidade da ponta ja clicada. */
+  huA: number;
 }
 
 /** Duas casas decimais: o voxel do CBCT costuma ser 0,25 mm. */
@@ -45,6 +53,10 @@ function round2(mm: number): number {
  * A validacao e geometrica, nao por faixa: `planeDimensions` e a mesma conta
  * que o cursor usa para aceitar um clique, entao um ponto aceito aqui e um
  * ponto que existe na imagem.
+ *
+ * Os HU sao lidos por `planeHuAt`, o mesmo caminho do readout sob o cursor:
+ * se a regua mostrasse outra fonte, ela discordaria do numero que o usuario
+ * acabou de ver passando o mouse no ponto.
  */
 export function buildMeasurement(
   volume: DicomVolume,
@@ -61,6 +73,9 @@ export function buildMeasurement(
   if (!dentro(a) || !dentro(b)) return { ok: false, error: "fora-do-plano" };
   if (a.u === b.u && a.v === b.v) return { ok: false, error: "ponto-igual" };
 
+  const huA = Math.round(planeHuAt(volume, plane, slice, a.u, a.v));
+  const huB = Math.round(planeHuAt(volume, plane, slice, b.u, b.v));
+
   return {
     ok: true,
     measurement: {
@@ -70,6 +85,9 @@ export function buildMeasurement(
       a: { u: a.u, v: a.v },
       b: { u: b.u, v: b.v },
       distanceMm: round2(planeDistanceMm(volume, plane, a, b)),
+      huA,
+      huB,
+      deltaHu: huB - huA,
     },
   };
 }

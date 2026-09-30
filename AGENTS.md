@@ -35,8 +35,9 @@ Isso impõe duas regras em `lib/`:
 - **Fase 3**: canvas axial 2D com HU e W/L reais.
 - **Fase 4a**: carga de série multi-arquivo/multi-frame, volume 3D achatado
   `[z][y][x]` e MPR axial/coronal/sagittal com crosshair sincronizado.
-- **Fase 4b** (estamos aqui): régua de distância em mm por plano, com lista,
-  remoção e limpeza. Sem HU dos pontos e sem ΔHU.
+- **Fase 4b**: régua de distância em mm por plano, com lista, remoção e limpeza.
+- **Fase 5a** (estamos aqui): HU das duas pontas da régua e ΔHU com sinal.
+  Ainda não existe medição de ângulo, anotação de texto nem exportação.
 
 Só avance de fase com ordem explícita do usuário.
 
@@ -59,6 +60,11 @@ Estas custaram bug real; todas já têm teste.
   viewport conta quantas estão visíveis). Medir não projeta para os outros
   planos: um viewer de PACS mostra as réguas nos MPRs, aqui elas somem, e o
   E2E compara desenhadas × lista no corte atual.
+- **O HU da ponta tem que sair de `planeHuAt`, o mesmo caminho do readout sob o
+  cursor.** Ler o HU de outro lugar (o `storedValue` cru, ou no rescale errado)
+  faz a régua discordar do número que o usuário acabou de ver passando o mouse
+  no ponto — e o delta erra junto, porque é a diferença dos dois. O HU é lido no
+  `slice` da própria medida, não no corte que estiver em foco.
 - **O canvas é quadrado; o que sobra é tarja.** O `aspect-square` do viewport
   resolve, e `imagemDoPlano` no `scripts/e2e-dicom.mjs` centraliza a imagem
   dentro dele. Nada de medir posição por fração da altura: converta
@@ -75,7 +81,7 @@ npm run build            # build de produção
 npm run sample           # gera a fixture de 1 corte em samples/
 npm run sample:series    # gera a série de 32 cortes + a variante multiframe
 npm run verify:sample    # valida a fixture de 1 corte (27 checks)
-npm run verify:volume    # valida HU/W-L/MPR/medicao puros (99 checks)
+npm run verify:volume    # valida HU/W-L/MPR/medicao puros (110 checks)
 npm run verify:series    # monta a série real e confere voxel a voxel (50 checks)
 npm run e2e              # Chrome headless via CDP, porta 3210
 npm run verify           # tsc + build + sample + volume + series + e2e

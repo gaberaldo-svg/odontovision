@@ -385,5 +385,48 @@ console.log("\n-- buildMeasurement: geometria e arredondamento --");
   check("recusa ponto negativo", buildMeasurement(mprVolume, "axial", 0, { u: -1, v: 0 }, { u: 1, v: 0 }, 1).ok === false);
 }
 
+console.log("\n-- buildMeasurement le HU dos dois pontos --");
+// A fixture MPR grava 100*z + 10*y + x, entao o HU de qualquer ponto e
+// conferivel na mao. Estes sao os pontos da medida de 2,5 mm acima.
+{
+  // axial no corte 1: u=x, v=y -> (0,1) = 100 + 10 = 110; (3,5) = 100 + 50 + 3 = 153
+  const m = buildMeasurement(mprVolume, "axial", 1, { u: 0, v: 1 }, { u: 3, v: 5 }, 1).measurement;
+  check("HU da ponta A", m.huA === 110, `= ${m.huA}`);
+  check("HU da ponta B", m.huB === 153, `= ${m.huB}`);
+  check("delta = B - A", m.deltaHu === 43, `= ${m.deltaHu}`);
+  check("delta bate com as pontas", m.deltaHu === m.huB - m.huA);
+
+  // Inverter as pontas inverte o delta e mantem o comprimento: a medida nao
+  // depende da ordem, so a leitura do sinal.
+  const r = buildMeasurement(mprVolume, "axial", 1, { u: 3, v: 5 }, { u: 0, v: 1 }, 2).measurement;
+  check("inverter pontas mantem o mm", r.distanceMm === m.distanceMm);
+  check("inverter pontas inverte o delta", r.deltaHu === -m.deltaHu, `= ${r.deltaHu}`);
+
+  // O HU e lido no CORTE da medida, nao no corte 0: o mesmo (u,v) no axial 0
+  // vale 10 + x, no axial 1 vale 100 + 10 + x. Ler no corte errado erraria em
+  // 100 HU sem nenhum sinal na tela.
+  check("HU usa o corte da medida", m.huA === 110 && m.huA !== 10,
+    `corte 1 = ${m.huA}, corte 0 seria 10`);
+
+  // Cada plano le seu proprio (u,v): no coronal (0,1) com y=0 e x=0 -> z=1 -> 100.
+  const c = buildMeasurement(mprVolume, "coronal", 0, { u: 0, v: 1 }, { u: 3, v: 2 }, 3).measurement;
+  check("HU no coronal le x e z", c.huA === 100 && c.huB === 203,
+    `A=${c.huA} B=${c.huB}`);
+  // Sagital com x=0: (u,v) = (y,z), y=1 -> 10 + z=1 -> 110.
+  const s = buildMeasurement(mprVolume, "sagital", 0, { u: 1, v: 1 }, { u: 5, v: 3 }, 4).measurement;
+  check("HU no sagital le y e z", s.huA === 110 && s.huB === 350,
+    `A=${s.huA} B=${s.huB}`);
+
+  // A mesma medida no volume real da serie: rescale entra na conta.
+  const comSlope = buildMeasurement(
+    { ...mprVolume, rescaleSlope: 2, rescaleIntercept: -1024 },
+    "axial", 1, { u: 0, v: 1 }, { u: 3, v: 5 }, 5).measurement;
+  check("HU respeita slope/intercept", comSlope.huA === (110 * 2 - 1024) && comSlope.huB === (153 * 2 - 1024),
+    `A=${comSlope.huA} B=${comSlope.huB}`);
+  // O delta e a diferenca ja com o rescale aplicado, nao o stored bruto.
+  check("delta usa HU ja convertido", comSlope.deltaHu === comSlope.huB - comSlope.huA
+    && comSlope.deltaHu === (153 - 110) * 2, `= ${comSlope.deltaHu}`);
+}
+
 console.log(`\n${pass} passaram, ${fail} falharam`);
 process.exit(fail === 0 ? 0 : 1);

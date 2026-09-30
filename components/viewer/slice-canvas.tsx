@@ -4,7 +4,7 @@ import React, { useEffect, useRef, useState } from "react";
 import type { DicomVolume, Plane } from "@/lib/dicom/types";
 import type { MeasureDraft, Measurement } from "@/lib/dicom/measure";
 import { planeAspect, planeDimensions, planeSliceCount, planeSliceToImageData } from "@/lib/dicom/volume";
-import { formatMm } from "@/lib/format";
+import { formatDeltaHu, formatHu, formatMm } from "@/lib/format";
 
 export interface SliceCanvasProps {
   volume: DicomVolume;
@@ -156,6 +156,8 @@ export function SliceCanvas({
         { x: m.a.u * scale, y: m.a.v * aspect * scale },
         { x: m.b.u * scale, y: m.b.v * aspect * scale },
         formatMm(m.distanceMm),
+        formatHu(m.huA),
+        formatHu(m.huB),
         false,
         imgData.width,
         imgData.height,
@@ -164,13 +166,18 @@ export function SliceCanvas({
 
     if (draft) {
       const origem = { x: draft.from.u * scale, y: draft.from.v * aspect * scale };
+      const ponta = draft.to
+        ? { x: draft.to.u * scale, y: draft.to.v * aspect * scale }
+        : origem;
       drawRuler(
         ctx,
         origem,
-        draft.to
-          ? { x: draft.to.u * scale, y: draft.to.v * aspect * scale }
-          : origem,
+        ponta,
         draft.distanceMm === null ? "" : formatMm(draft.distanceMm),
+        // A previa so sabe o HU da origem: o da outra ponta so existe depois
+        // do segundo clique, que e o que fecha a medida.
+        formatHu(draft.huA),
+        "",
         true,
         imgData.width,
         imgData.height,
@@ -308,7 +315,34 @@ function drawCrosshair(
 }
 
 /**
- * Regua em mm sobre a imagem: segmento, marcas de ponta e o comprimento.
+ * Rotulo com fundo, preso dentro da imagem.
+ *
+ * Um rotulo que sai da borda cai no tarja preta e some, e uma regua pode terminar
+ * em qualquer ponto: por isso o clamp e feito aqui, uma vez, para os tres
+ * rotulos da regua.
+ */
+function drawTag(
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  text: string,
+  width: number,
+  height: number,
+) {
+  ctx.font = "600 11px ui-monospace, SFMono-Regular, Menlo, monospace";
+  const boxW = ctx.measureText(text).width + 8;
+  const boxH = 15;
+  const bx = Math.max(2, Math.min(x, width - boxW - 2));
+  const by = Math.max(2, Math.min(y, height - boxH - 2));
+  ctx.fillStyle = "rgba(0, 0, 0, 0.75)";
+  ctx.fillRect(bx, by, boxW, boxH);
+  ctx.fillStyle = "#facc15";
+  ctx.fillText(text, bx + 4, by + boxH - 4);
+}
+
+/**
+ * Regua em mm sobre a imagem: segmento, marcas de ponta, a distancia e o HU de
+ * cada ponta.
  *
  * `dashed` marca a previa -- a ancora foi clicada mas a regua ainda nao foi
  * fechada. As coordenadas ja vem em pixels do espaco da imagem, entao esta
@@ -318,7 +352,9 @@ function drawRuler(
   ctx: CanvasRenderingContext2D,
   a: { x: number; y: number },
   b: { x: number; y: number },
-  label: string,
+  rotulo: string,
+  huA: string,
+  huB: string,
   dashed: boolean,
   width: number,
   height: number,
@@ -343,25 +379,13 @@ function drawRuler(
     ctx.stroke();
   }
 
-  if (!label) {
-    ctx.restore();
-    return;
-  }
-
-  // Rotulo ao lado do meio da linha, preso dentro da imagem: um rotulo que sai
-  // da borda cai no tarja preta e some.
-  ctx.font = "600 11px ui-monospace, SFMono-Regular, Menlo, monospace";
-  const textWidth = ctx.measureText(label).width;
-  const boxW = textWidth + 8;
-  const boxH = 15;
+  // A distancia fica no meio da linha. Os dois HU ficam nas pontas, empurrados
+  // para fora do segmento: se ficassem do mesmo lado, uma regua curta teria os
+  // tres rotulos empilhados em cima um do outro.
   const mx = (a.x + b.x) / 2;
   const my = (a.y + b.y) / 2;
-  const bx = Math.max(2, Math.min(mx + 9, width - boxW - 2));
-  const by = Math.max(2, Math.min(my - boxH - 4, height - boxH - 2));
-
-  ctx.fillStyle = "rgba(0, 0, 0, 0.75)";
-  ctx.fillRect(bx, by, boxW, boxH);
-  ctx.fillStyle = "#facc15";
-  ctx.fillText(label, bx + 4, by + boxH - 4);
+  if (rotulo) drawTag(ctx, mx + 9, my - 19, rotulo, width, height);
+  drawTag(ctx, a.x - 12, a.y - 19, huA, width, height);
+  drawTag(ctx, b.x + 12, b.y - 19, huB, width, height);
   ctx.restore();
 }

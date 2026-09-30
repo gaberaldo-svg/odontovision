@@ -728,11 +728,14 @@ try {
     const { result } = await cdp.send("Runtime.evaluate", {
       expression: `(() => [...document.querySelectorAll('[data-measure]')].map(el => ({
         mm: Number(el.dataset.mm),
+        deg: Number(el.dataset.deg),
+        kind: el.dataset.measureKind,
         plano: el.dataset.measurePlane,
         corte: Number(el.dataset.measureSlice),
         huA: Number(el.dataset.huA),
         huB: Number(el.dataset.huB),
-        delta: Number(el.dataset.deltaHu),
+        huC: el.dataset.huC === undefined ? undefined : Number(el.dataset.huC),
+        delta: el.dataset.deltaHu === undefined ? undefined : Number(el.dataset.deltaHu),
         texto: el.textContent.trim(),
       })))()`,
       returnByValue: true,
@@ -955,6 +958,95 @@ try {
     `regua=${corHuU?.huA} phantom=${huAtVoxel(U, yCorr, outroV)}`);
   check("pontas no eixo u tem HU diferente", corHuU?.huA !== corHuU?.huB,
     `${corHuU?.huA} vs ${corHuU?.huB}`);
+
+  // --- angulo em tres pontos ---
+  // Triangulo de voxels escolhido para nao servir os dois planos: os bracos
+  // sao (4,4) e (4,-4), que somam zero no axial (grade isotropica de 0,25) e
+  // por isso dao 90,0 graus la. No coronal o eixo v vale 1,00 mm, entao o mesmo
+  // triangulo vira 151,9. Se o angulo fosse calculado na grade, os dois
+  // planos responderiam 90 e o teste passaria sem ver nada.
+  console.log("\n-- angulo: tres cliques viram uma medida em graus --");
+  // Zera a lista antes: os testes de regua deixam medidas para tras e as
+  // contagens abaixo so significam alguma coisa com a lista limpa.
+  await realClick("button", "limpar todas");
+  // Volta o axial ao corte de referencia antes de medir: os testes de regua
+  // mexeram em z ao clicar no coronal, e o angulo herdaria o corte errado --
+  // o que faria o HU dos tres pontos bater com outro voxel sem sinal na tela.
+  await cliqueNoVoxel("Coronal", 10, corteAxial);
+  await apertarEsc();
+  const btnAngulo = await realClick('[aria-label="Angulo"]');
+  check("botao do Angulo clicado", !btnAngulo.erro, btnAngulo.erro ?? "");
+
+  await cliqueNoVoxel("Axial", 34, 18);
+  check("primeiro clique do angulo nao fecha medida", (await lerMedicoes()).length === 0);
+  await cliqueNoVoxel("Axial", 30, 14);
+  check("segundo clique ainda nao fecha medida", (await lerMedicoes()).length === 0);
+  await cliqueNoVoxel("Axial", 34, 10);
+  const medidasAposAngulo = await lerMedicoes();
+  const angAx = medidasAposAngulo.at(-1);
+  check("terceiro clique fecha uma medida", medidasAposAngulo.length === 1, `n=${medidasAposAngulo.length}`);
+  check("kind = angle na lista", angAx?.kind === "angle", angAx?.kind ?? "");
+  check("angulo no axial = 90,0 graus", angAx?.deg === 90, `deg=${angAx?.deg}`);
+  check("sidebar mostra os graus", /90\.0°/.test(angAx?.texto ?? ""), angAx?.texto ?? "");
+  check("angulo desenhado no axial", (await lerRegras()).Axial === 1,
+    JSON.stringify(await lerRegras()));
+
+  check("angulo do axial fica no corte de referencia",
+    angAx?.plano === "axial" && angAx?.corte === corteAxial,
+    `${angAx?.plano} ${angAx?.corte} (esperado axial ${corteAxial})`);
+
+  // O mesmo triangulo no coronal. O corte de uma medida coronal e o y, nao o z:
+  // no coronal o eixo v e z, entao o primeiro clique fixa y=10.
+  await cliqueNoVoxel("Coronal", 10, (corteAxial + 8) % 32);
+  await apertarEsc();
+  const btnAngulo2 = await realClick('[aria-label="Angulo"]');
+  check("tool Angulo reativada no coronal", !btnAngulo2.erro, btnAngulo2.erro ?? "");
+  await cliqueNoVoxel("Coronal", 34, 18);
+  await cliqueNoVoxel("Coronal", 30, 14);
+  await cliqueNoVoxel("Coronal", 34, 10);
+  const angCor = (await lerMedicoes()).at(-1);
+  check("angulo no coronal = 151,9 graus, nao os 90,0 da grade",
+    angCor?.deg === 151.9, `deg=${angCor?.deg}`);
+  check("o coronal nao devolve o mesmo numero do axial",
+    angCor?.deg !== angAx?.deg, `${angCor?.deg} vs ${angAx?.deg}`);
+  check("angulo guardado como coronal, no corte y do clique",
+    angCor?.plano === "coronal" && angCor?.corte === 10,
+    `${angCor?.plano} ${angCor?.corte}`);
+
+  // Os tres pontos tem HU, e o vertice entra na conta.
+  check("tres pontos com HU no axial",
+    angAx?.huA === huAtVoxel(34, 18, corteAxial)
+      && angAx?.huB === huAtVoxel(30, 14, corteAxial)
+      && angAx?.huC === huAtVoxel(34, 10, corteAxial),
+    `A=${angAx?.huA}/${huAtVoxel(34, 18, corteAxial)} `
+    + `B=${angAx?.huB}/${huAtVoxel(30, 14, corteAxial)} `
+    + `C=${angAx?.huC}/${huAtVoxel(34, 10, corteAxial)}`);
+  check("angulo nao tem deltaHU", angAx?.delta === undefined, `delta=${angAx?.delta}`);
+
+  // Vertice em cima da ponta: recusado e explicado. O par valido fica de pe, e o
+  // clique seguinte completa a medida com ele -- perder os pontos por um erro
+  // de um clique seria o pior comportamento aqui.
+  console.log("\n-- o angulo recusa vertice degenerado --");
+  await apertarEsc();
+  await realClick('[aria-label="Angulo"]');
+  await cliqueNoVoxel("Coronal", 30, 14);
+  await cliqueNoVoxel("Coronal", 36, 18);
+  await cliqueNoVoxel("Coronal", 36, 18);
+  // Os dois angulos anteriores (axial e coronal) seguem na lista, entao a
+  // contagem comeca em 2.
+  check("vertice igual a ponta e recusado", (await lerMedicoes()).length === 2,
+    `n=${(await lerMedicoes()).length}`);
+  check("erro explica o vertice",
+    /vertice/i.test((await lerErroMedida()) ?? ""), (await lerErroMedida()) ?? "sem erro");
+  await cliqueNoVoxel("Coronal", 34, 10);
+  const depoisDoErro = (await lerMedicoes()).at(-1);
+  check("o par anterior sobreviveu a recusa", (await lerMedicoes()).length === 3,
+    `n=${(await lerMedicoes()).length}`);
+  // O vertice guardado e (36,18), com o par (30,14) e a ponta nova (34,10):
+  // em coronal, u vale 0,25 e v vale 1,00. Nao precisa ser a prova do angulo
+  // em mm -- o do axial ja e -- so que ele usa o par que sobrou, nao um novo.
+  check("o angulo Recusado-usou o par guardado", depoisDoErro?.deg === 17,
+    `deg=${depoisDoErro?.deg}`);
 
   const limparHu = await realClick("button", "limpar todas");
   check("cleanup: limpar todas", !limparHu.erro, limparHu.erro ?? "");

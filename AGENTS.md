@@ -36,8 +36,10 @@ Isso impõe duas regras em `lib/`:
 - **Fase 4a**: carga de série multi-arquivo/multi-frame, volume 3D achatado
   `[z][y][x]` e MPR axial/coronal/sagittal com crosshair sincronizado.
 - **Fase 4b**: régua de distância em mm por plano, com lista, remoção e limpeza.
-- **Fase 5a** (estamos aqui): HU das duas pontas da régua e ΔHU com sinal.
-  Ainda não existe medição de ângulo, anotação de texto nem exportação.
+- **Fase 5a**: HU das duas pontas da régua e ΔHU com sinal.
+- **Fase 5b** (estamos aqui): ângulo de três pontos (dois cliques marcam as
+  pontas, o terceiro fecha), em graus e com o HU dos três pontos.
+  Ainda não existe anotação de texto nem exportação.
 
 Só avance de fase com ordem explícita do usuário.
 
@@ -65,6 +67,24 @@ Estas custaram bug real; todas já têm teste.
   faz a régua discordar do número que o usuário acabou de ver passando o mouse
   no ponto — e o delta erra junto, porque é a diferença dos dois. O HU é lido no
   `slice` da própria medida, não no corte que estiver em foco.
+- **O ângulo é calculado em mm, não em voxel.** No coronal/sagital a grade é
+  anisotrópica (0,25 mm em u contra 1,00 mm em v na fixture), e a mesma tripla
+  de voxels dá 90,0° no axial e 151,9° no coronal. Calcular com a distância
+  entre voxels reproduz o número do axial em todo plano — um valor plausível e
+  errado, que só aparece quando alguém compara com o software do fabricante.
+  Use `planeAngleDeg`, que já converte com `planeVoxelSizeMm`.
+- **`atan2(cruzamento, produto)`, nunca `acos`.** Em ângulo reto o produto
+  arredonda para um valor acima da norma dos vetores, e o `acos` devolve `NaN`
+  justamente no caso mais comum. A 90,0° exata é onde o `acos` quebra.
+- **O ângulo não tem `deltaHu`.** Com três pontos não existe par único: a
+  densidade dos três vai para a lista e o delta fica de fora, porque um delta
+  escolhido por conta própria seria um número que ninguém pediu.
+- Vértice em cima de uma das pontas é recusado (`vertice-igual`), porque o
+  ângulo não existe com um braço de tamanho zero. Três pontos **colineares**, ao
+  contrário, são válidos: 0° e 180° é assim que se confere se algo está reto.
+- `Measurement` é união discriminada por `kind: "distance" | "angle"`.
+  Qualquer consumidor novo narrow por `kind` antes de ler `distanceMm` ou
+  `angleDeg`; o E2E usa `data-measure-kind` para isso.
 - **O canvas é quadrado; o que sobra é tarja.** O `aspect-square` do viewport
   resolve, e `imagemDoPlano` no `scripts/e2e-dicom.mjs` centraliza a imagem
   dentro dele. Nada de medir posição por fração da altura: converta
@@ -81,7 +101,7 @@ npm run build            # build de produção
 npm run sample           # gera a fixture de 1 corte em samples/
 npm run sample:series    # gera a série de 32 cortes + a variante multiframe
 npm run verify:sample    # valida a fixture de 1 corte (27 checks)
-npm run verify:volume    # valida HU/W-L/MPR/medicao puros (110 checks)
+npm run verify:volume    # valida HU/W-L/MPR/medicao/angulo puros (134 checks)
 npm run verify:series    # monta a série real e confere voxel a voxel (50 checks)
 npm run e2e              # Chrome headless via CDP, porta 3210
 npm run verify           # tsc + build + sample + volume + series + e2e

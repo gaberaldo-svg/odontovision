@@ -2,7 +2,7 @@ import { create } from "zustand";
 import { ViewportType, Tool, Preset, ExamMetadata, MOCK_EXAM, MOCK_SLICE_COUNT } from "@/lib/mock-data";
 import type { DicomMeta, DicomVolume, Plane } from "@/lib/dicom/types";
 import { autoWindow } from "@/lib/dicom/volume";
-import { buildMeasurement, type Measurement, type MeasureError } from "@/lib/dicom/measure";
+import { buildAngleMeasurement, buildMeasurement, type Measurement, type MeasureError } from "@/lib/dicom/measure";
 
 /** Voxel apontado pelos tres viewports ao mesmo tempo. */
 export interface Crosshair {
@@ -46,6 +46,8 @@ interface ViewerState {
   measurements: Measurement[];
   /** Primeiro ponto de uma regua em andamento, enquanto a tool Regua esta ativa. */
   measureDraft: { u: number; v: number } | null;
+  /** Pontos ja clicados de um angulo em andamento (0, 1 ou 2). */
+  anglePoints: { u: number; v: number }[];
   /** Recusa do ultimo clique, para a UI explicar em vez de ignorar. */
   lastMeasureError: MeasureError | null;
   /** Contador para os ids das regras; nunca reutiliza id apagado. */
@@ -63,6 +65,11 @@ interface ViewerState {
    * medida. Fora do par a ancora continua de pe, para o usuario corrigir.
    */
   addMeasurement: (plane: Plane, slice: number, u: number, v: number) => void;
+  /**
+   * Clique com o Angulo ativo: acumula pontos e fecha no terceiro. Com dois
+   * pontos, o clique completa a medida; antes disso, so marca.
+   */
+  addAnglePoint: (plane: Plane, slice: number, u: number, v: number) => void;
   removeMeasurement: (id: number) => void;
   clearMeasurements: () => void;
   cancelMeasureDraft: () => void;
@@ -96,6 +103,7 @@ const initialState = {
   loadError: null as string | null,
   measurements: [] as Measurement[],
   measureDraft: null as { u: number; v: number } | null,
+  anglePoints: [] as { u: number; v: number }[],
   lastMeasureError: null as MeasureError | null,
   lastMeasureId: 0,
 };
@@ -135,9 +143,11 @@ export const useViewerStore = create<ViewerState>((set) => ({
 
   setActiveTool: (tool) => set((state) => ({
     activeTool: tool,
-    // Sair da regua abandona a ancora: um ponto solto esperando o segundo
-    // clique sobreviveria a troca de tool e travaria a proxima medicao.
+    // Sair da tool de medida abandona o que estava em andamento: um ponto solto
+    // esperando o proximo clique sobreviveria a troca e travaria a proxima
+    // medicao.
     measureDraft: tool === "Caliper" ? state.measureDraft : null,
+    anglePoints: tool === "Angle" ? state.anglePoints : [],
     lastMeasureError: null,
   })),
 
@@ -198,9 +208,38 @@ export const useViewerStore = create<ViewerState>((set) => ({
     measurements: state.measurements.filter((m) => m.id !== id),
   })),
 
-  clearMeasurements: () => set({ measurements: [], measureDraft: null, lastMeasureError: null }),
+  addAnglePoint: (plane, slice, u, v) => set((state) => {
+    const point = { u, v };
+    // Os pontos ja marcados continuam de pe depois de um clique invalido, como
+    // na regua: errar a ponta do meio e comum e perder o trabalho e pior.
+    if (state.anglePoints.length < 2) {
+      return { anglePoints: [...state.anglePoints, point], lastMeasureError: null };
+    }
 
-  cancelMeasureDraft: () => set({ measureDraft: null, lastMeasureError: null }),
+    const volume = state.volume;
+    if (!volume) return { anglePoints: [], lastMeasureError: null };
+
+    const [a, b] = state.anglePoints;
+    const id = state.lastMeasureId + 1;
+    const built = buildAngleMeasurement(volume, plane, slice, a, b, point, id);
+    if (!built.ok) return { lastMeasureError: built.error };
+
+    return {
+      measurements: [...state.measurements, built.measurement],
+      anglePoints: [],
+      lastMeasureError: null,
+      lastMeasureId: id,
+    };
+  }),
+
+  clearMeasurements: () => set({
+    measurements: [],
+    measureDraft: null,
+    anglePoints: [],
+    lastMeasureError: null,
+  }),
+
+  cancelMeasureDraft: () => set({ measureDraft: null, anglePoints: [], lastMeasureError: null }),
 
   toggleSidebar: () => set((state) => ({ isSidebarOpen: !state.isSidebarOpen })),
 
@@ -253,6 +292,7 @@ loadVolume: (meta, volume, series) => set((state) => {
       // para o espacamento do exame que as originou.
       measurements: [],
       measureDraft: null,
+      anglePoints: [],
       lastMeasureError: null,
       slices: {
         Axial: Math.floor((counts.Axial - 1) / 2),

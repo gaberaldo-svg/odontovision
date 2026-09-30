@@ -4,7 +4,7 @@ import { useViewerStore } from "@/store/use-viewer-store";
 import { FileScan, Lock, X } from "lucide-react";
 import type { Plane } from "@/lib/dicom/types";
 import type { MeasureError } from "@/lib/dicom/measure";
-import { formatDeltaHu, formatMm } from "@/lib/format";
+import { formatDeg, formatDeltaHu, formatMm } from "@/lib/format";
 import { Separator } from "@/components/ui/separator";
 import { FileLoader } from "@/components/layout/file-loader";
 
@@ -18,6 +18,7 @@ const PLANO_LABEL: Record<Plane, string> = {
 const ERRO_MEDIDA: Record<MeasureError, string> = {
   "fora-do-plano": "Clique dentro da imagem para medir.",
   "ponto-igual": "Os dois pontos precisam ser diferentes.",
+  "vertice-igual": "O vertice do angulo precisa ficar fora das duas pontas.",
 };
 
 export function Sidebar() {
@@ -155,7 +156,8 @@ export function Sidebar() {
 
               {measurements.length === 0 ? (
                 <p className="text-[10px] text-muted-foreground">
-                  Ative a Regua e clique em dois pontos do mesmo corte.
+                  Ative a Regua e clique em dois pontos, ou o Angulo e clique em tres, do
+                  mesmo corte.
                 </p>
               ) : (
                 <ul className="flex flex-col gap-1" data-measure-list>
@@ -164,12 +166,22 @@ export function Sidebar() {
                       key={m.id}
                       className="flex flex-col gap-0.5 rounded border border-sidebar-border bg-background px-2 py-1.5"
                       data-measure=""
-                      data-mm={m.distanceMm}
-                      data-hu-a={m.huA}
-                      data-hu-b={m.huB}
-                      data-delta-hu={m.deltaHu}
+                      data-measure-kind={m.kind}
                       data-measure-plane={m.plane}
                       data-measure-slice={m.slice}
+                      {...(m.kind === "angle"
+                        ? {
+                            "data-deg": m.angleDeg,
+                            "data-hu-a": m.huA,
+                            "data-hu-b": m.huB,
+                            "data-hu-c": m.huC,
+                          }
+                        : {
+                            "data-mm": m.distanceMm,
+                            "data-hu-a": m.huA,
+                            "data-hu-b": m.huB,
+                            "data-delta-hu": m.deltaHu,
+                          })}
                     >
                       <div className="flex items-center justify-between gap-2">
                         <span className="font-mono text-[11px] text-muted-foreground">
@@ -177,11 +189,13 @@ export function Sidebar() {
                         </span>
                         <span className="flex items-center gap-1.5">
                           <span className="font-mono text-[11px] text-primary">
-                            {formatMm(m.distanceMm)}
+                            {m.kind === "angle" ? formatDeg(m.angleDeg) : formatMm(m.distanceMm)}
                           </span>
                           <button
                             type="button"
-                            aria-label={`Remover medicao de ${formatMm(m.distanceMm)}`}
+                            aria-label={`Remover medicao de ${
+                              m.kind === "angle" ? formatDeg(m.angleDeg) : formatMm(m.distanceMm)
+                            }`}
                             onClick={() => removeMeasurement(m.id)}
                             className="text-muted-foreground hover:text-foreground"
                           >
@@ -189,13 +203,17 @@ export function Sidebar() {
                           </button>
                         </span>
                       </div>
-                      {/* Densidade das duas pontas e a diferenca: e o que separa
-                          osso cortical de medular numa regua. */}
+                      {/* Densidade das pontas. Na regua sao duas e o delta diz
+                          qual cameca mais densa; no angulo sao tres e nao ha
+                          par unico, entao o delta fica de fora. */}
                       <div className="flex items-center justify-between gap-2 font-mono text-[10px]">
                         <span className="text-muted-foreground">
-                          {m.huA} &rarr; {m.huB} HU
+                          {m.huA} &rarr; {m.huB}
+                          {m.kind === "angle" ? ` &rarr; ${m.huC}` : ""} HU
                         </span>
-                        <span className="text-primary">&Delta;{formatDeltaHu(m.deltaHu)}</span>
+                        {m.kind === "distance" && (
+                          <span className="text-primary">&Delta;{formatDeltaHu(m.deltaHu)}</span>
+                        )}
                       </div>
                     </li>
                   ))}

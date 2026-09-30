@@ -302,3 +302,33 @@ export function planeDistanceMm(
   const dv = (to.v - from.v) * size.v;
   return Math.hypot(du, dv);
 }
+
+/**
+ * Angulo em graus no vertice `vertex`, entre os pontos `from` e `to`.
+ *
+ * Os vetores sao convertidos para mm ANTES do angulo: num plano com eixos de
+ * 0,25 mm e 1,00 mm, dois voxel em u e dois em v formam um angulo reto em mm e
+ * de 45 graus na grade. Calcular na grade daria um numero plausivel e errado,
+ * que e o tipo de bug que so aparece quando alguem compara com o software do
+ * fabricante.
+ *
+ * `atan2(cruzamento, produto)` em vez de `acos`: em ponto reto o produto
+ * arredonda para um valor que passa da_norma_unitario, e o `acos` devolve NaN
+ * justamente no angulo mais comum.
+ */
+export function planeAngleDeg(
+  volume: DicomVolume,
+  plane: Plane,
+  from: { u: number; v: number },
+  vertex: { u: number; v: number },
+  to: { u: number; v: number },
+): number {
+  const size = planeVoxelSizeMm(volume, plane);
+  const ux = (from.u - vertex.u) * size.u;
+  const uy = (from.v - vertex.v) * size.v;
+  const vx = (to.u - vertex.u) * size.u;
+  const vy = (to.v - vertex.v) * size.v;
+  const cross = ux * vy - uy * vx;
+  const dot = ux * vx + uy * vy;
+  return (Math.atan2(Math.abs(cross), dot) * 180) / Math.PI;
+}

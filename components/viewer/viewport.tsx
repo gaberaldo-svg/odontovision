@@ -4,8 +4,9 @@ import * as React from "react";
 import { Layers, FileScan, AlertTriangle } from "lucide-react";
 import { ViewportType } from "@/lib/mock-data";
 import type { Plane } from "@/lib/dicom/types";
-import type { MeasureDraft } from "@/lib/dicom/measure";
-import { planeDistanceMm, planeHuAt, voxelFromPlane } from "@/lib/dicom/volume";
+import type { AngleDraft, AngleMeasurement, DistanceMeasurement, MeasureDraft } from "@/lib/dicom/measure";
+import { planeAngleDeg, planeDistanceMm, planeHuAt, voxelFromPlane } from "@/lib/dicom/volume";
+import { round1 } from "@/lib/format";
 import { useViewerStore } from "@/store/use-viewer-store";
 import { DicomOverlay } from "@/components/viewer/dicom-overlay";
 import { SliceCanvas } from "@/components/viewer/slice-canvas";
@@ -45,8 +46,10 @@ const panOffset = useViewerStore((state) => state.panOffset);
 const activeTool = useViewerStore((state) => state.activeTool);
 const measurements = useViewerStore((state) => state.measurements);
 const measureDraft = useViewerStore((state) => state.measureDraft);
-const addMeasurement = useViewerStore((state) => state.addMeasurement);
-const cancelMeasureDraft = useViewerStore((state) => state.cancelMeasureDraft);
+  const anglePoints = useViewerStore((state) => state.anglePoints);
+  const addMeasurement = useViewerStore((state) => state.addMeasurement);
+  const addAnglePoint = useViewerStore((state) => state.addAnglePoint);
+  const cancelMeasureDraft = useViewerStore((state) => state.cancelMeasureDraft);
 
   const plane = PLANE[viewport];
   const currentSlice = slices[viewport] || 0;
@@ -66,8 +69,10 @@ const cancelMeasureDraft = useViewerStore((state) => state.cancelMeasureDraft);
   const toVoxel = (u: number, v: number) => voxelFromPlane(plane, currentSlice, u, v);
 
   const caliper = activeTool === "Caliper";
+  const angleTool = activeTool === "Angle";
+  const measuring = caliper || angleTool;
 
-  // Onde o ponteiro esta, mas so enquanto ha regua em andamento: fora disso
+  // Onde o ponteiro esta, mas so enquanto ha medida em andamento: fora disso
   // guardar a posicao a cada mousemove redesenharia os tres viewports sem
   // nenhum ganho visual.
   const [hover, setHover] = React.useState<{ u: number; v: number } | null>(null);
@@ -77,6 +82,15 @@ const cancelMeasureDraft = useViewerStore((state) => state.cancelMeasureDraft);
   const rulers = React.useMemo(
     () => (volume ? measurements.filter((m) => m.plane === plane && m.slice === currentSlice) : []),
     [measurements, plane, currentSlice, volume],
+  );
+
+  const distances = React.useMemo(
+    () => rulers.filter((m): m is DistanceMeasurement => m.kind === "distance"),
+    [rulers],
+  );
+  const angles = React.useMemo(
+    () => rulers.filter((m): m is AngleMeasurement => m.kind === "angle"),
+    [rulers],
   );
 
   const draft = React.useMemo<MeasureDraft | null>(() => {
@@ -89,12 +103,29 @@ const cancelMeasureDraft = useViewerStore((state) => state.cancelMeasureDraft);
     };
   }, [volume, caliper, measureDraft, hover, plane, currentSlice]);
 
+  // O angulo so tem valor depois da segunda ponta. Com um ponto so, o
+  // proximo clique marca a segunda ponta; com dois, fecha a medida.
+  const angleDraft = React.useMemo<AngleDraft | null>(() => {
+    if (!volume || !angleTool || anglePoints.length === 0) return null;
+    return {
+      points: anglePoints,
+      // A ponta que falta e sempre o ponteiro: com um ponto marcado ela e a
+      // segunda ponta, com dois e a terceira.
+      to: hover,
+      angleDeg:
+        anglePoints.length === 2 && hover
+          ? round1(planeAngleDeg(volume, plane, anglePoints[0], anglePoints[1], hover))
+          : null,
+      hu: anglePoints.map((p) => Math.round(planeHuAt(volume, plane, currentSlice, p.u, p.v))),
+    };
+  }, [volume, angleTool, anglePoints, hover, plane, currentSlice]);
+
   // HU sob o cursor, lido do volume real no plano que esta em foco.
   const handleHover = (u: number, v: number) => {
     if (!volume) return;
     const hu = planeHuAt(volume, plane, currentSlice, u, v);
     setCursorHU(Number.isNaN(hu) ? null : Math.round(hu));
-    if (measureDraft) setHover({ u, v });
+    if (measureDraft || anglePoints.length > 0) setHover({ u, v });
   };
 
   const handleHoverLeave = () => {
@@ -112,7 +143,8 @@ const cancelMeasureDraft = useViewerStore((state) => state.cancelMeasureDraft);
   };
 
   const handleMeasure = (u: number, v: number) => {
-    addMeasurement(plane, currentSlice, u, v);
+    if (angleTool) addAnglePoint(plane, currentSlice, u, v);
+    else addMeasurement(plane, currentSlice, u, v);
   };
 
   return (
@@ -152,9 +184,13 @@ const cancelMeasureDraft = useViewerStore((state) => state.cancelMeasureDraft);
             zoom={zoomLevel}
             pan={panOffset}
             crosshair={crosshair}
+            measuring={measuring}
             caliper={caliper}
-            measurements={rulers}
+            angle={angleTool}
+            distances={distances}
+            angles={angles}
             draft={draft}
+            angleDraft={angleDraft}
             onCrosshairMove={handleCrosshairMove}
             onMeasure={handleMeasure}
             onDraftCancel={cancelMeasureDraft}

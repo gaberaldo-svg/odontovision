@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 import {
   ScanLine,
@@ -6,6 +6,7 @@ import {
   Hand,
   Search,
   Ruler,
+  Triangle,
   RotateCcw,
   X,
   Upload,
@@ -34,6 +35,7 @@ const TOOLS: { id: Tool; icon: React.ElementType }[] = [
   { id: "Pan", icon: Hand },
   { id: "Zoom", icon: Search },
   { id: "Caliper", icon: Ruler },
+  { id: "Angle", icon: Triangle },
 ];
 
 export function TopBar() {

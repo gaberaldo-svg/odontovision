@@ -2,9 +2,14 @@
 
 import React, { useEffect, useRef, useState } from "react";
 import type { DicomVolume, Plane } from "@/lib/dicom/types";
-import type { MeasureDraft, Measurement } from "@/lib/dicom/measure";
+import type {
+  AngleDraft,
+  AngleMeasurement,
+  DistanceMeasurement,
+  MeasureDraft,
+} from "@/lib/dicom/measure";
 import { planeAspect, planeDimensions, planeSliceCount, planeSliceToImageData } from "@/lib/dicom/volume";
-import { formatDeltaHu, formatHu, formatMm } from "@/lib/format";
+import { formatDeg, formatHu, formatMm } from "@/lib/format";
 
 export interface SliceCanvasProps {
   volume: DicomVolume;
@@ -18,12 +23,20 @@ export interface SliceCanvasProps {
   pan: { x: number; y: number };
   /** Posicao do crosshair no plano, em coordenadas de voxel. */
   crosshair: { u: number; v: number } | null;
-  /** Tool Regua ativa: o clique vira ponto de medicao em vez de so crosshair. */
+  /** Alguma tool de medida ativa: o clique vira ponto em vez de so crosshair. */
+  measuring: boolean;
+  /** Tool Regua ativa: fecha a medida no segundo clique. */
   caliper: boolean;
-  /** Regras confirmadas deste plano e deste corte. */
-  measurements: Measurement[];
+  /** Tool Angulo ativa: fecha a medida no terceiro clique. */
+  angle: boolean;
+  /** Regras de comprimento deste plano e deste corte. */
+  distances: DistanceMeasurement[];
+  /** Regras de angulo deste plano e deste corte. */
+  angles: AngleMeasurement[];
   /** Previa da regua em andamento: origem ate o ponteiro. Null quando nao ha. */
   draft: MeasureDraft | null;
+  /** Previa do angulo em andamento. Null quando nao ha. */
+  angleDraft: AngleDraft | null;
   onCrosshairMove: (u: number, v: number) => void;
   /** Clique com a regua ativa. */
   onMeasure: (u: number, v: number) => void;
@@ -50,9 +63,13 @@ export function SliceCanvas({
   zoom,
   pan,
   crosshair,
-  caliper,
-  measurements,
+  distances,
+  angles,
   draft,
+  angleDraft,
+  measuring,
+  caliper,
+  angle,
   onCrosshairMove,
   onMeasure,
   onDraftCancel,
@@ -150,7 +167,7 @@ export function SliceCanvas({
 
     // As reguas entram no mesmo transform do desenho: o eixo v precisa do
     // mesmo `aspect` que a imagem, senao a linha sai na diagonal errada.
-    for (const m of measurements) {
+    for (const m of distances) {
       drawRuler(
         ctx,
         { x: m.a.u * scale, y: m.a.v * aspect * scale },
@@ -158,6 +175,19 @@ export function SliceCanvas({
         formatMm(m.distanceMm),
         formatHu(m.huA),
         formatHu(m.huB),
+        false,
+        imgData.width,
+        imgData.height,
+      );
+    }
+
+    for (const m of angles) {
+      drawAngle(
+        ctx,
+        { x: m.a.u * scale, y: m.a.v * aspect * scale },
+        { x: m.b.u * scale, y: m.b.v * aspect * scale },
+        { x: m.c.u * scale, y: m.c.v * aspect * scale },
+        formatDeg(m.angleDeg),
         false,
         imgData.width,
         imgData.height,
@@ -184,6 +214,42 @@ export function SliceCanvas({
       );
     }
 
+if (angleDraft) {
+      // Com dois pontos o vertice ja esta marcado e o bracinho que falta vira
+      // arco com o numero ao vivo; com menos disso so se liga o proximo
+      // segmento, porque ainda nao existe angulo para desenhar.
+      const px = angleDraft.points.map((p) => ({ x: p.u * scale, y: p.v * aspect * scale }));
+      const alvo = angleDraft.to
+        ? { x: angleDraft.to.u * scale, y: angleDraft.to.v * aspect * scale }
+        : null;
+      if (px.length === 2 && alvo) {
+        drawAngle(
+          ctx, px[0], px[1], alvo,
+          angleDraft.angleDeg === null ? "" : formatDeg(angleDraft.angleDeg),
+          true, imgData.width, imgData.height,
+        );
+      } else {
+        ctx.save();
+        ctx.lineWidth = 1.5;
+        ctx.strokeStyle = "rgba(250, 204, 21, 0.9)";
+        ctx.setLineDash([4, 3]);
+        ctx.beginPath();
+        const ultimo = px.length > 0 ? px[px.length - 1] : null;
+        const inicio = px.length === 2 ? px[0] : ultimo;
+        if (inicio) ctx.moveTo(inicio.x, inicio.y);
+        else if (px.length === 0) ctx.moveTo(0, 0);
+        if (ultimo && alvo) ctx.lineTo(alvo.x, alvo.y);
+        ctx.stroke();
+        ctx.restore();
+      }
+      for (const p of px) {
+        ctx.fillStyle = "#facc15";
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, 3, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+
     ctx.restore();
   }, [
     volume,
@@ -196,8 +262,10 @@ export function SliceCanvas({
     pan.y,
     crosshair?.u,
     crosshair?.v,
-    measurements,
+    distances,
+    angles,
     draft,
+    angleDraft,
     size.width,
     size.height,
     size.dpr,
@@ -244,17 +312,19 @@ export function SliceCanvas({
     // A regua nasce no pointerup, que e onde o codigo ja sabe se foi clique
     // ou arrasto. No pointerdown um arrasto deixaria a origem no lugar.
     if (caliper) onMeasure(voxel.u, voxel.v);
+    else if (angle) onMeasure(voxel.u, voxel.v);
   };
 
-  // Com uma regua em andamento, Escape descarta a origem.
+  // Escape descarta o que estiver em andamento: a origem da regua ou os pontos
+  // do angulo. Sem isso so haveria "desistir" trocando de tool.
   useEffect(() => {
-    if (!draft) return;
+    if (!draft && !angleDraft) return;
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key === "Escape") onDraftCancel();
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [draft, onDraftCancel]);
+  }, [draft, angleDraft, onDraftCancel]);
 
   return (
     <div
@@ -308,9 +378,68 @@ function drawCrosshair(
 
   ctx.stroke();
 
-  // Moldura: ajuda a ler a borda da imagem contra o fundo preto.
+// Moldura: ajuda a ler a borda da imagem contra o fundo preto.
   ctx.strokeStyle = "rgba(255, 255, 255, 0.12)";
   ctx.strokeRect(0.5, 0.5, width - 1, height - 1);
+  ctx.restore();
+}
+
+/**
+ * Angulo em graus: dois bracos, o vertice no meio e o arco entre eles.
+ *
+ * `dashed` marca a previa. O vertice e o ponto do meio porque e ali que a
+ * leitura do software tambem marca.
+ */
+function drawAngle(
+  ctx: CanvasRenderingContext2D,
+  a: { x: number; y: number },
+  b: { x: number; y: number },
+  c: { x: number; y: number },
+  rotulo: string,
+  dashed: boolean,
+  width: number,
+  height: number,
+) {
+  ctx.save();
+  ctx.lineWidth = 1.5;
+  ctx.strokeStyle = dashed ? "rgba(250, 204, 21, 0.9)" : "rgba(250, 204, 21, 1)";
+  ctx.setLineDash(dashed ? [4, 3] : []);
+  for (const [p, q] of [[a, b], [b, c]] as const) {
+    ctx.beginPath();
+    ctx.moveTo(p.x, p.y);
+    ctx.lineTo(q.x, q.y);
+    ctx.stroke();
+  }
+  ctx.setLineDash([]);
+
+  for (const p of [a, b, c]) {
+    ctx.beginPath();
+    ctx.moveTo(p.x - 3, p.y - 3);
+    ctx.lineTo(p.x + 3, p.y + 3);
+    ctx.moveTo(p.x + 3, p.y - 3);
+    ctx.lineTo(p.x - 3, p.y + 3);
+    ctx.stroke();
+  }
+
+  // `atan2` com o y para baixo inverte o sentido do angulo; trocar o sentido
+  // de um dos lados devolve a orientacao em tela e o arco sai do lado certo.
+  const angA = Math.atan2(a.y - b.y, a.x - b.x);
+  const angC = Math.atan2(c.y - b.y, c.x - b.x);
+  // Raio pela menor das duas pontas: se um braco e curtinho, um arco grande
+  // sairia da imagem.
+  const raio =
+    Math.min(Math.hypot(a.x - b.x, a.y - b.y), Math.hypot(c.x - b.x, c.y - b.y)) * 0.4;
+  if (raio > 4) {
+    ctx.beginPath();
+    ctx.lineWidth = 1;
+    ctx.globalAlpha = 0.75;
+    ctx.arc(b.x, b.y, raio, angA, angC, angC < angA);
+    ctx.stroke();
+    ctx.globalAlpha = 1;
+    ctx.lineWidth = 1.5;
+  }
+
+  if (rotulo) drawTag(ctx, (a.x + c.x) / 2, (a.y + c.y) / 2 - 19, rotulo, width, height);
   ctx.restore();
 }
 

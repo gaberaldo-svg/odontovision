@@ -23,3 +23,18 @@ export function formatHu(hu: number): string {
 export function formatDeltaHu(hu: number): string {
   return hu > 0 ? `+${hu} HU` : `${hu} HU`;
 }
+
+/**
+ * Uma casa decimal nos graus.
+ *
+ * Uma decima de grau e o que a clinica le; uma casa a mais dariam uma
+ * precisao que nao existe, porque a entrada e um ponto de voxel.
+ */
+export function round1(deg: number): number {
+  return Math.round(deg * 10) / 10;
+}
+
+/** Graus com uma casa, sem sinal: o angulo nunca e negativo. */
+export function formatDeg(deg: number): string {
+  return `${deg.toFixed(1)}\u00B0`;
+}

@@ -1,4 +1,4 @@
-// Testa a matematica de volume e janela/contraste sem DOM e sem browser.
+﻿// Testa a matematica de volume e janela/contraste sem DOM e sem browser.
 // Roda direto no Node, usando o type-stripping nativo do Node 22
 // (--experimental-strip-types), sem compilar nada.
 //
@@ -37,9 +37,9 @@ function near(label, actual, expected, tol) {
 // volume.ts e TypeScript puro (sem enum/namespace), entao o Node carrega
 // direto com type-stripping. O import de tipos e apagado em tempo de
 // compilacao, entao types.ts nem chega a ser resolvido.
-const { huAt, huToGray, autoWindow, storedRange, sliceToImageData, voxelIndex, planeVoxelSizeMm, planeDistanceMm } =
+const { huAt, huToGray, autoWindow, storedRange, sliceToImageData, voxelIndex, planeVoxelSizeMm, planeDistanceMm, planeAngleDeg } =
   await import("../lib/dicom/volume.ts");
-const { buildMeasurement } = await import("../lib/dicom/measure.ts");
+const { buildMeasurement, buildAngleMeasurement } = await import("../lib/dicom/measure.ts");
 
 // --- monta o volume a partir da fixture, como o worker faz ---
 const byteArray = new Uint8Array(readFileSync(SAMPLE));
@@ -427,6 +427,83 @@ console.log("\n-- buildMeasurement le HU dos dois pontos --");
   check("delta usa HU ja convertido", comSlope.deltaHu === comSlope.huB - comSlope.huA
     && comSlope.deltaHu === (153 - 110) * 2, `= ${comSlope.deltaHu}`);
 }
+
+console.log("\n-- planeAngleDeg: o angulo e em mm, nao em voxel --");
+// Fixture: pixelSpacing 0,5 e sliceSpacing 2,0. No coronal/sagital a grade e
+// 4x mais alta que larga, entao a mesma tripla de voxels dá angulos muito
+// diferentes conforme o plano. E o teste que pega o calculo em voxel: o
+// resultado errado (126,9 no axial) e plausivel demais para chamar atencao.
+const tripla = { a: { u: 7, v: 3 }, b: { u: 3, v: 1 }, c: { u: 1, v: 2 } };
+near("axial: grade isotropica", planeAngleDeg(mprVolume, "axial", tripla.a, tripla.b, tripla.c), 126.9, 0.05);
+near("coronal: v esticado 4x muda o angulo", planeAngleDeg(mprVolume, "coronal", tripla.a, tripla.b, tripla.c), 53.1, 0.05);
+check("coronal difere do axial (seria 126,9 em voxel)", 
+  planeAngleDeg(mprVolume, "coronal", tripla.a, tripla.b, tripla.c)
+    !== planeAngleDeg(mprVolume, "axial", tripla.a, tripla.b, tripla.c));
+
+// Angulo reto exato: e o caso em que `acos` quebra, porque o produto
+// arredonda para um valor acima da norma dos vetores e devolve NaN.
+const reto = { a: { u: 7, v: 1 }, b: { u: 3, v: 1 }, c: { u: 3, v: 2 } };
+near("angulo reto exato no coronal", planeAngleDeg(mprVolume, "coronal", reto.a, reto.b, reto.c), 90, 0.05);
+check("reto nao devolve NaN", Number.isFinite(planeAngleDeg(mprVolume, "coronal", reto.a, reto.b, reto.c)));
+
+// Colinear: 0 e 180 sao angulos legitimos -- e assim que se confere "isto aqui
+// esta reto". Nao sao erro.
+near("mesma direcao = 0 graus",
+  planeAngleDeg(mprVolume, "axial", { u: 4, v: 1 }, { u: 3, v: 1 }, { u: 5, v: 1 }), 0, 0.05);
+near("direcoes opostas = 180 graus",
+  planeAngleDeg(mprVolume, "axial", { u: 2, v: 1 }, { u: 3, v: 1 }, { u: 4, v: 1 }), 180, 0.05);
+
+console.log("\n-- buildAngleMeasurement --");
+const angAx = buildAngleMeasurement(mprVolume, "axial", 1, { u: 7, v: 3 }, { u: 3, v: 1 }, { u: 1, v: 2 }, 11);
+check("axial aceita", angAx.ok === true);
+check("kind = angle", angAx.ok && angAx.measurement.kind === "angle");
+near("graus com uma casa", angAx.ok && angAx.measurement.angleDeg, 126.9, 0.05);
+check("guarda os tres pontos", angAx.ok
+  && angAx.measurement.a.u === 7 && angAx.measurement.b.u === 3 && angAx.measurement.c.u === 1);
+// Sem `deltaHu`: com tres pontos nao existe par unico, e um delta escolhido
+// por conta propria seria um numero que ninguem pediu.
+check("angulo nao tem deltaHu", angAx.ok && !("deltaHu" in angAx.measurement));
+
+// HU dos tres pontos, pelo mesmo caminho do readout (HU = 100z + 10y + x).
+check("HU dos tres pontos no axial", angAx.ok
+  && angAx.measurement.huA === 137 && angAx.measurement.huB === 113 && angAx.measurement.huC === 121,
+  angAx.ok ? `A=${angAx.measurement.huA} B=${angAx.measurement.huB} C=${angAx.measurement.huC}` : "recusado");
+
+const angCor = buildAngleMeasurement(mprVolume, "coronal", 0, { u: 7, v: 3 }, { u: 3, v: 1 }, { u: 1, v: 2 }, 12);
+near("coronal: 53,1 e nao os 126,9 da grade", angCor.ok && angCor.measurement.angleDeg, 53.1, 0.05);
+check("HU dos tres pontos no coronal", angCor.ok
+  && angCor.measurement.huA === 307 && angCor.measurement.huB === 103 && angCor.measurement.huC === 201,
+  angCor.ok ? `A=${angCor.measurement.huA} B=${angCor.measurement.huB} C=${angCor.measurement.huC}` : "recusado");
+
+const angSag = buildAngleMeasurement(mprVolume, "sagital", 0, { u: 4, v: 3 }, { u: 2, v: 1 }, { u: 0, v: 2 }, 13);
+near("sagital com os proprios eixos", angSag.ok && angSag.measurement.angleDeg, 40.6, 0.05);
+check("HU no sagital le y e z", angSag.ok
+  && angSag.measurement.huA === 340 && angSag.measurement.huB === 120 && angSag.measurement.huC === 200,
+  angSag.ok ? `A=${angSag.measurement.huA} B=${angSag.measurement.huB} C=${angSag.measurement.huC}` : "recusado");
+
+// Rescale entra nos tres pontos.
+const angSlope = buildAngleMeasurement(
+  { ...mprVolume, rescaleSlope: 2, rescaleIntercept: -1024 },
+  "axial", 1, { u: 7, v: 3 }, { u: 3, v: 1 }, { u: 1, v: 2 }, 14);
+check("HU do angulo respeita slope/intercept", angSlope.ok
+  && angSlope.measurement.huA === 137 * 2 - 1024 && angSlope.measurement.huC === 121 * 2 - 1024,
+  angSlope.ok ? `A=${angSlope.measurement.huA} C=${angSlope.measurement.huC}` : "recusado");
+
+// Braco de tamanho zero: o angulo nao existe.
+check("vertice igual a ponta A e recusado",
+  buildAngleMeasurement(mprVolume, "axial", 1, { u: 3, v: 1 }, { u: 3, v: 1 }, { u: 5, v: 3 }, 1).error === "vertice-igual");
+check("vertice igual a ponta C e recusado",
+  buildAngleMeasurement(mprVolume, "axial", 1, { u: 1, v: 1 }, { u: 3, v: 3 }, { u: 3, v: 3 }, 1).error === "vertice-igual");
+check("pontas iguais entre si e recusado",
+  buildAngleMeasurement(mprVolume, "axial", 1, { u: 1, v: 1 }, { u: 3, v: 3 }, { u: 1, v: 1 }, 1).error === "vertice-igual");
+// Fora do plano: v=4 nao existe no coronal (4 cortes).
+check("v que so cabe no axial e recusado",
+  buildAngleMeasurement(mprVolume, "coronal", 0, { u: 0, v: 5 }, { u: 1, v: 1 }, { u: 2, v: 2 }, 1).error === "fora-do-plano");
+check("ponto fracionario e recusado",
+  buildAngleMeasurement(mprVolume, "axial", 1, { u: 0.5, v: 1 }, { u: 1, v: 1 }, { u: 2, v: 2 }, 1).error === "fora-do-plano");
+// A regua e o angulo sao tipos distintos: o `kind` e o que separa.
+check("regua continua sendo 'distance'",
+  buildMeasurement(mprVolume, "axial", 1, { u: 0, v: 1 }, { u: 3, v: 5 }, 7).measurement.kind === "distance");
 
 console.log(`\n${pass} passaram, ${fail} falharam`);
 process.exit(fail === 0 ? 0 : 1);

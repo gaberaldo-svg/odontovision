@@ -3,6 +3,7 @@
 import { useViewerStore } from "@/store/use-viewer-store";
 import { FileScan, Lock } from "lucide-react";
 import { Separator } from "@/components/ui/separator";
+import { FileLoader } from "@/components/layout/file-loader";
 
 export function Sidebar() {
   const { isSidebarOpen, metadata, windowWidth, windowCenter, cursorHU } = useViewerStore();
@@ -17,10 +18,15 @@ export function Sidebar() {
 
       <div className="flex-1 overflow-auto p-4 flex flex-col gap-6">
         {!metadata ? (
-          <div className="flex flex-col items-center justify-center gap-2 text-center py-8">
+          <div className="flex flex-col items-center justify-center gap-3 py-6 text-center">
             <FileScan className="size-8 text-muted-foreground" />
             <p className="text-xs">Nenhum exame</p>
-            <p className="text-[10px] text-muted-foreground">Carregue um exame para ver os metadados</p>
+            <p className="text-[10px] text-muted-foreground">
+              Carregue um exame para ver os metadados
+            </p>
+            <div className="w-full pt-1">
+              <FileLoader />
+            </div>
           </div>
         ) : (
           <>

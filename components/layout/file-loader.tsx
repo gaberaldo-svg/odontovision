@@ -9,6 +9,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { FileScan, FolderOpen, Loader2, TriangleAlert } from "lucide-react";
 import { parseDicomFile, parseSeriesFiles, type DicomParseResult, type DicomSeriesResult } from "@/lib/dicom/client";
 import { onOpenFilePicker } from "@/lib/dicom/file-picker";
+import { ehJpegDoNavegador } from "@/lib/dicom/jpeg";
 import { useViewerStore } from "@/store/use-viewer-store";
 
 type Status = "idle" | "reading" | "done" | "error";
@@ -28,6 +29,11 @@ export function FileLoader({ compact = false }: { compact?: boolean }) {
   const loadVolume = useViewerStore((state) => state.loadVolume);
   const [status, setStatus] = useState<Status>("idle");
   const [message, setMessage] = useState<string | null>(null);
+  /**
+   * O exame veio comprimido com perda (JPEG Baseline/Extended). O aviso fica
+   * na tela ate o proximo exame porque o HU errado nao se desfaz sozinho.
+   */
+  const [husAproximados, setHusAproximados] = useState(false);
 
   // Botoes em outras partes da UI pedem a abertura deste mesmo input.
   useEffect(() => onOpenFilePicker(() => fileRef.current?.click()), []);
@@ -60,7 +66,8 @@ export function FileLoader({ compact = false }: { compact?: boolean }) {
           if (result.needsDecompression) {
             setStatus("error");
             setMessage(
-              "Sintaxe de transferencia comprimida. Decodificacao JPEG/JPEG2000 fica para uma fase posterior.",
+              "Compressao sem decoder no navegador: JPEG 2000, JPEG-LS e JPEG " +
+                "Lossless ainda nao sao lidos. RLE Lossless e JPEG Baseline/Extended sim.",
             );
             return;
           }
@@ -76,6 +83,11 @@ export function FileLoader({ compact = false }: { compact?: boolean }) {
             `${meta.columns}x${meta.rows} · ${volume.slices} corte(s) · ` +
               `${result.tagCount} tags · ${meta.pixelSpacing?.slice(0, 2).join(" x ") ?? "-"} mm`,
           );
+          // JPEG Baseline/Extended e compressao COM PERDA: o HU que o app
+          // mostra ja vem com o erro da compressao, e nao com o do visor. Dizer
+          // isso e obrigatorio num app que mede ΔHU entre duas pontas -- um
+          // numero plausivel e silenciosamente errado seria pior que recusar.
+          setHusAproximados(ehJpegDoNavegador(meta.transferSyntax));
           return;
         }
 
@@ -221,6 +233,22 @@ export function FileLoader({ compact = false }: { compact?: boolean }) {
         >
           {status === "error" && <TriangleAlert className="mt-px size-3 shrink-0" aria-hidden />}
           <span className="break-words">{message}</span>
+        </p>
+      )}
+
+      {husAproximados && (
+        <p
+          role="status"
+          data-hu-aproximado=""
+          className="flex items-start gap-1.5 rounded border border-amber-500/40 bg-amber-500/10 px-2 py-1.5 font-mono text-[10px] leading-relaxed text-amber-700 dark:text-amber-400"
+        >
+          <TriangleAlert className="mt-px size-3 shrink-0" aria-hidden />
+          <span className="break-words">
+            HU <strong>aproximado</strong>: este exame vem em JPEG, que e compressao com
+            perda. Serve para navegar e medir distancia e angulo, mas o numero de
+            densidade carrega o erro da compressao -- nao compare com outro software
+            sem considerar isso.
+          </span>
         </p>
       )}
     </div>

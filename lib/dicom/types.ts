@@ -24,6 +24,12 @@ export interface DicomMeta {
   rescaleSlope: number;
   rescaleIntercept: number;
   rescaleType: string | null;
+  /**
+   * PixelPaddingValue (0028,0120). JPEG entrega 8 bits sem sinal dentro de um
+   * container de 16; o padding e o que faz `pixel + padding` caber no
+   * BitsAllocated declarado. Vale 0 quando ausente, que e o caso comum.
+   */
+  pixelPaddingValue: number;
   bitsAllocated: number;
   bitsStored: number;
   pixelRepresentation: "signed" | "unsigned";
@@ -72,6 +78,13 @@ export interface DicomParseResult {
   volume: DicomVolume | null;
   /** Sintaxe comprimida: o volume vem null e exige um decoder. */
   needsDecompression: boolean;
+  /**
+   * Onde esta o pixel data, em bytes do arquivo. Vai no resultado porque o
+   * decoder de JPEG roda na MAIN THREAD (o `createImageBitmap` e assincrono e
+   * o parse e sincrono) e precisa reencontrar o fragmento sem refazer a
+   * varredura de elementos.
+   */
+  pixelData: { dataOffset: number; length: number } | null;
   tagCount: number;
   warnings: string[];
 }

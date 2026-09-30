@@ -112,6 +112,7 @@ const { parseDicom } = await import("../lib/dicom/parse.ts");
 const { huAt: huAtLib } = await import("../lib/dicom/volume.ts");
 const { descomprimePackBits, decodificaFrameRle, RleError } =
   await import("../lib/dicom/rle.ts");
+const { valoresDoImageData, ehJpegDoNavegador, precisaoDoJpeg } = await import("../lib/dicom/jpeg.ts");
 const LE_UID = "1.2.840.10008.1.2.1";
 const BE_UID = "1.2.840.10008.1.2.2";
 if (LE_UID.length !== BE_UID.length) {
@@ -411,6 +412,84 @@ console.log("\n-- RLE multi-frame: cada corte vem do seu fragmento --");
       ? rMulti.volume.values.slice(0, base.length).every((v, i) => v === base[i])
       : false, true);
 }
+
+console.log("\n-- extração de valores de um ImageData (o JPEG em si é do navegador) --");
+// O decoder JPEG NÃO é nosso: é o do navegador. O que é nosso, e o que este
+// teste cobre, é a extração: o RGBA que ele devolve -> valores do volume, com o
+// PixelPaddingValue e a ordem de bytes. Um check de "não é NaN" passaria com
+// os canais errados, então o teste compara os números.
+const rgba = (cinzas) => {
+  const d = new Uint8ClampedArray(cinzas.length * 4);
+  cinzas.forEach((g, i) => { d[i * 4] = g; d[i * 4 + 1] = g; d[i * 4 + 2] = g; d[i * 4 + 3] = 255; });
+  return d;
+};
+const vUnsigned = valoresDoImageData(rgba([0, 60, 120, 255]), 4, 0, false);
+check("cinza vem do canal R", Array.from(vUnsigned).join(" "), "0 60 120 255");
+check("Uint16Array quando nao e signed", vUnsigned.constructor.name, "Uint16Array");
+
+// PixelPaddingValue: JPEG entrega 8 bits sem sinal num container de 16. Sem o
+// padding o volume inteiro sai deslocado -- e o sintoma e "o HU esta todo
+// errado por um numero fixo", que parece calibracao, nao bug.
+const comPadding = valoresDoImageData(rgba([0, 128, 255]), 3, 2000, false);
+check("PixelPaddingValue soma ao valor", Array.from(comPadding).join(" "), "2000 2128 2255");
+
+// Signed: um Byte de 8 bits cabe folgado em Int16, entao osigned so aparece
+// quando o PixelPaddingValue empurra o total para fora da faixa positiva.
+const vSigned = valoresDoImageData(rgba([200, 100, 255]), 3, 0, true);
+check("Int16Array quando signed", vSigned.constructor.name, "Int16Array");
+check("byte de 8 bits cabe em Int16 sem virar negativo",
+  Array.from(vSigned).join(" "), "200 100 255");
+// 200 + 32800 = 33000, que estoura o Int16 e tem de dar negativo em vez de
+// embrulhar para um numero positivo e plausivel.
+const vOverflow = valoresDoImageData(rgba([200]), 1, 32800, true);
+check("signed estoura para negativo em vez de embrulhar",
+  Array.from(vOverflow).join(" "), String((200 + 32800 << 16 >> 16)));
+
+// Um ImageData menor (o navegador pode recortar) nao pode deixar buraco nem
+// estourar o volume.
+check("ImageData curto para no tamanho do volume",
+  Array.from(valoresDoImageData(rgba([1, 2, 3, 4, 5]), 3, 0, false)).join(" "), "1 2 3");
+check("ImageData grande e truncado no esperado",
+  Array.from(valoresDoImageData(rgba([1, 2, 3, 4, 5]), 4, 0, false)).join(" "), "1 2 3 4");
+check("ImageData vazio nao quebra", valoresDoImageData(new Uint8ClampedArray(0), 4, 0, false).length, 4);
+
+// Só Baseline e Extended são do navegador. Lossless e 2000 não são, e mandá-los
+// para o createImageBitmap daria uma imagem em silêncio errada.
+check("Baseline é do navegador", ehJpegDoNavegador("1.2.840.10008.1.2.4.50"), true);
+check("Extended é do navegador", ehJpegDoNavegador("1.2.840.10008.1.2.4.51"), true);
+check("JPEG Lossless NÃO é do navegador", ehJpegDoNavegador("1.2.840.10008.1.2.4.57"), false);
+check("JPEG 2000 NÃO é do navegador", ehJpegDoNavegador("1.2.840.10008.1.2.4.90"), false);
+check("JPEG-LS NÃO é do navegador", ehJpegDoNavegador("1.2.840.10008.1.2.4.80"), false);
+check("RLE NÃO é JPEG", ehJpegDoNavegador("1.2.840.10008.1.2.5"), false);
+check("transfer syntax ausente não é JPEG", ehJpegDoNavegador(null), false);
+
+// Precisão do SOF: o navegador só vai até 8 bits, e JPEG Extended de 12/16 é
+// comum em imagem médica. Sem ler o SOF, o createImageBitmap recusa com uma
+// mensagem que não diz nada sobre o motivo.
+const sof = (precisao) => {
+  // SOI + SOF0 + EOI. No SOF o comprimento ocupa [4..5] e a PRECISÃO é [6].
+  const b = new Uint8Array([0xff, 0xd8, 0xff, 0xc0, 0x00, 0x11, 0x08, 0x00, 0x10,
+    0x00, 0x10, 0x01, 0x01, 0x11, 0x00, 0xff, 0xd9]);
+  b[6] = precisao;
+  return b;
+};
+check("SOF de 8 bits é lido", precisaoDoJpeg(sof(8)), 8);
+check("SOF de 12 bits é lido", precisaoDoJpeg(sof(12)), 12);
+check("SOF de 16 bits é lido", precisaoDoJpeg(sof(16)), 16);
+// SOF1 = Extended, que é o caso do JPEG-lossy.dcm real do pydicom.
+check("SOF1 (Extended) de 12 bits é lido",
+  precisaoDoJpeg(new Uint8Array([0xff, 0xd8, 0xff, 0xc1, 0x00, 0x11, 0x0c, 0x00, 0x10,
+    0x00, 0x10, 0x01, 0x01, 0x11, 0x00, 0xff, 0xd9])), 12);
+// Um JPEG normal tem DQT antes do SOF; o leitor tem que pular marcador em vez de
+// ler a precisão do lugar errado.
+check("pula DQT antes do SOF",
+  precisaoDoJpeg(new Uint8Array([0xff, 0xd8, 0xff, 0xdb, 0x00, 0x04, 0x00, 0x00,
+    0xff, 0xc0, 0x00, 0x11, 0x08, 0x00, 0x10, 0x00, 0x10, 0x01, 0x01, 0x11, 0x00,
+    0xff, 0xd9])), 8);
+check("sem SOF devolve null (não inventa)", precisaoDoJpeg(new Uint8Array([0xff, 0xd8, 0xff, 0xd9])), null);
+check("stream vazio não trava", precisaoDoJpeg(new Uint8Array(0)), null);
+check("não lê DHT como se fosse SOF",
+  precisaoDoJpeg(new Uint8Array([0xff, 0xd8, 0xff, 0xc4, 0x00, 0x04, 0x00, 0x00, 0xff, 0xd9])), null);
 
 console.log("\n-- PackBits do DICOM: 0x00 copia um literal --");
 check("0x00 seguido de byte = 1 byte de saída",

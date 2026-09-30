@@ -49,10 +49,10 @@ Isso impõe duas regras em `lib/`:
   rótulo está. O CSV ganhou colunas `texto`, `u` e `v`; a 5d as deixava de
   fora, e um clínico que anota "canal mandibular" e exporta ficava sem o
   rótulo no arquivo.
-- **Fase 6** (estamos aqui): o caminho de **pixel data encapsulado**, com RLE
-  Lossless como primeiro decoder. Antes, `dicom-parser` entregava os
-  fragmentos e o app os ignorava: recusava tudo que fosse comprimido. Ainda
-  não há decoder para JPEG2000, JPEG-LS ou JPEG Baseline.
+- **Fase 6** (estamos aqui): o caminho de **pixel data encapsulado**, com dois
+  decoders: RLE Lossless (feito aqui) e JPEG Baseline/Extended (delegado ao
+  `createImageBitmap` do navegador, **só até 8 bits**). Ainda não há decoder
+  para JPEG 2000, JPEG-LS ou JPEG Lossless.
 
 Só avance de fase com ordem explícita do usuário.
 
@@ -191,19 +191,36 @@ Estas custaram bug real; todas já têm teste.
   pegar o bug de "reusar o mesmo fragmento em todos os cortes", que daria um
   volume com N cópias da primeira imagem sem nenhum sintoma. Nenhum `verify`
   depende de download.
-- **JPEG Baseline/Extended deliberadamente NÃO tem decoder ainda**, e o motivo
-  não é esforço: falta par de verificação. O `JPEG-lossy.dcm` do pydicom é a
-  única imagem JPEG em tons de cinza do conjunto e **não existe o gêmeo não
-  comprimido dela** — sem um par não há como provar voxel a voxel que o decoder
-  lê certo, que é o padrão que sustenta o big endian e o RLE. Some-se que ele é
-  JPEG **Extended** (`1.2.840.10008.1.2.4.51`, apesar do nome), 1024×256,
-  decodificando para 8 bits dentro de um container de 16 bits: entra
-  `PixelPaddingValue` na conta. Abrir JPEG pela rota do navegador
-  (`createImageBitmap` + canvas) daria Unsupported/8-bit sem escrever decoder,
-  ao custo de uma ida ao canvas por frame e de HU **aproximado** — o arquivo é
-  lossy, então o número de HU já nasce com erro. Se for para fazer, é uma
-  decisão de produto (mostrar HU aproximado em vez de recusar o arquivo), não
-  um detalhe de implementação.
+- **JPEG Baseline/Extended vai pelo `createImageBitmap` do navegador, e só até
+  8 bits.** O navegador tem o decoder; escrever um aqui seriam ~400 linhas para
+  o mesmo lugar. Mas ele decodifica **8 bits**, e o `JPEG-lossy.dcm` real do
+  pydicom é JPEG **Extended de 12 bits** (SOF1 com P=12) — o `createImageBitmap`
+  recusa com "the source image could not be decoded", que não diz nada sobre o
+  motivo. Por isso `precisaoDoJpeg` lê o SOF e o app recusa **nomeando os 12
+  bits**, com a sugestão de exportar em RLE. Uma recusa que explica o motivo
+  vale mais que um decodificador a mais.
+- **JPEG é compressão COM PERDA: o HU carrega o erro da compressão, e a UI
+  avisa** (`[data-hu-aproximado]`). Num app que mede ΔHU entre duas pontas, um
+  número plausível e silenciosamente errado é pior que recusar o arquivo. O
+  aviso fica na tela até o próximo exame, porque HU errado não se desfaz sozinho.
+- **A decodificação de JPEG roda no WORKER, não na main thread.** O
+  `postMessage` transfere o `ArrayBuffer` para o worker, então a cópia da main
+  thread fica *detached* — e é no worker que estão os bytes. `createImageBitmap`
+  e `OffscreenCanvas` existem em `DedicatedWorkerGlobalScope`. `parseDicom`
+  continua **sincrônico**; só este passo é assíncrono, e o `onmessage` do
+  worker virou `async`.
+- **Depois de decodificar, `needsDecompression` tem que virar `false` no
+  resultado.** A UI olha essa flag *antes* do volume, então sem isso ela
+  mostrava "sem decoder" para um arquivo que acabara de ser decodificado.
+- **Não existe JPEG em tons de cinza de 8 bits no pydicom** (o único é o de 12
+  bits acima). O E2E então **gera o arquivo**: o browser *codifica* um JPEG de 8
+  bits com `convertToBlob`, e o app o *decodifica* — os dois lados do mesmo
+  decoder, com a verdade dos dois lados, sem depender de download. O `.dcm` é
+  montado com `scripts/lib/dicom-writer.mjs`, o mesmo writer das fixtures:
+  reimplementar o grupo 0002 dentro do E2E deu "missing required meta header
+  attribute 0002,0010", que era erro do arquivo de teste, não do app.
+- `data-hu` é um atributo **sem valor**; o número está no `textContent`. Ler
+  `dataset.hu` dá `Number("") === 0` e o check passa com o HU errado.
 - `Sagital` é o nome da viewport; `"sagittal"` é o valor interno de `Plane`.
 
 ## Comandos
@@ -214,7 +231,7 @@ npm run build            # build de produção
 npm run sample           # gera a fixture de 1 corte em samples/
 npm run sample:series    # gera a série de 32 cortes + a variante multiframe
 npm run fetch:real       # baixa DICOMs REAIS de teste em samples/real/ (ver abaixo)
-npm run verify:sample    # valida a fixture de 1 corte (67 checks)
+npm run verify:sample    # valida a fixture de 1 corte (91 checks)
 npm run verify:volume    # valida HU/W-L/MPR/medicao/angulo/relatorio/anotacao puros (194 checks)
 npm run verify:series    # monta a série real e confere voxel a voxel (50 checks)
 npm run e2e              # Chrome headless via CDP, porta 3210

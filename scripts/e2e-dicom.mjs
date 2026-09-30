@@ -6,18 +6,22 @@
 // Requer o build de producao (npm run build) e Chrome/Edge instalado.
 
 import { spawn } from "node:child_process";
-import { readFileSync, readdirSync, existsSync } from "node:fs";
+import { readFileSync, readdirSync, existsSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 // A fixture e a unica fonte do valor esperado: o E2E nao importa a logica de
 // montagem do app, importa o phantom para conferir voxel a voxel.
 import { huAtVoxel } from "./make-sample-series.mjs";
+import { buildFile, el, us, encapsulatedPixelData } from "./lib/dicom-writer.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(HERE, "..");
 const SAMPLE = join(ROOT, "samples", "phantom-64.dcm");
 const SERIES_DIR = join(ROOT, "samples", "series");
+// Opcional: `npm run fetch:real` traz um JPEG Baseline/Extended real. Sem ele o
+// bloco de JPEG e PULADO, com aviso visivel — nunca um "passou" silencioso.
+const JPEG_REAL = join(ROOT, "samples", "real", "JPEG-lossy.dcm");
 const PORT = 3210;
 const CDP_PORT = 9222;
 const CHROME_CANDIDATES = [
@@ -1390,6 +1394,217 @@ try {
     !relSemNotas?.texto.includes("ANOTACOES"), (relSemNotas?.texto ?? "").slice(-120));
   check("as medidas continuam no relatorio",
     relSemNotas?.texto.includes("Medicoes: 1"), relSemNotas?.texto.split("\n").find((l) => l.startsWith("Medicoes:")) ?? "");
+  // --- JPEG Baseline/Extended pelo decoder do navegador ---
+  // O JPEG em si não é nosso (é o do navegador); o que se prova aqui é que o
+  // caminho inteiro funciona: fragmento -> createImageBitmap -> canvas ->
+  // valores -> volume -> tela, e que o aviso de "HU aproximado" aparece.
+  //
+  // Este é o único bloco que depende de `npm run fetch:real`. Sem o arquivo ele
+  // é pulado COM AVISO, nunca marcado como passou: um check pulado que parece
+  // verde é pior que nenhum.
+  if (!existsSync(JPEG_REAL)) {
+    console.log("\n-- JPEG: PULADO (rode `npm run fetch:real`) --");
+  } else {
+    // --- JPEG de 12 bits: tem de recusar COM MOTIVO ---
+    // O `JPEG-lossy.dcm` real e JPEG Extended de 12 bits, que o navegador nao
+    // decodifica. O que se prova e que a recusa diz "12 bits" e nao o
+    // genérico "nao pode decodificar": uma mensagem que nao explica o motivo
+    // deixa o usuario sem saber se o arquivo esta corrompido ou se o app e
+    // limitado.
+    console.log("\n-- JPEG de 12 bits: recusa explicando o motivo --");
+    await injetarArquivo(JPEG_REAL);
+    let jstatus = null;
+    for (let i = 0; i < 40; i++) {
+      await sleep(500);
+      const { result } = await cdp.send("Runtime.evaluate", {
+        expression: `document.querySelector('[role=status]')?.textContent?.trim() ?? null`,
+        returnByValue: true,
+      });
+      jstatus = result.value;
+      if (jstatus && /12 bits|n.o pode|comprim/i.test(jstatus)) break;
+    }
+    check("recusa nomeando a precisão de 12 bits",
+      !!jstatus && /12 bits/.test(jstatus), jstatus ?? "(vazio)");
+    check("não é a recusa genérica de 'comprimido'",
+      !!jstatus && !/Sintaxe de transferencia comprimida\. Decodificacao/.test(jstatus),
+      (jstatus ?? "").slice(0, 70));
+    check("não avisa HU aproximado num arquivo que não abriu",
+      (await cdp.send("Runtime.evaluate", {
+        expression: `!document.querySelector('[data-hu-aproximado]')`,
+        returnByValue: true,
+      })).result.value === true);
+  }
+
+  // --- JPEG de 8 bits: caminho feliz, com o JPEG gerado pelo próprio navegador ---
+  // Não existe no pydicom uma imagem JPEG em tons de cinza de 8 bits, então o
+  // arquivo é montado aqui: o browser ENCODEIA um JPEG 8-bit, e o app o
+  // DECODIFICA. Isso prova o caminho inteiro — fragmento → createImageBitmap →
+  // canvas → valores → volume → tela — com a verdade dos dois lados do mesmo
+  // decoder, e sem depender de download.
+  console.log("\n-- JPEG de 8 bits: o browser decodifica o que ele mesmo codificou --");
+  {
+    const gerado = (await cdp.send("Runtime.evaluate", {
+      expression: `(async () => {
+        const w = 64, h = 48;
+        const c = new OffscreenCanvas(w, h);
+        const ctx = c.getContext('2d');
+        const img = ctx.createImageData(w, h);
+        // Mesma fantasia da fixture: ar em volta, osso no meio, tecido mole.
+        for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+          const i = y * w + x;
+          const d = Math.hypot(x - 32, y - 24);
+          const g = d > 26 ? 20 : d > 20 ? 120 : 220;
+          img.data[i*4] = g; img.data[i*4+1] = g; img.data[i*4+2] = g; img.data[i*4+3] = 255;
+        }
+        ctx.putImageData(img, 0, 0);
+        const blob = await c.convertToBlob({ type: 'image/jpeg', quality: 1 });
+        const buf = new Uint8Array(await blob.arrayBuffer());
+        let s = '';
+        for (let i = 0; i < buf.length; i++) s += String.fromCharCode(buf[i]);
+        return { w, h, jpegB64: btoa(s) };
+      })()`,
+      awaitPromise: true,
+      returnByValue: true,
+    })).result;
+    if (gerado?.exceptionDetails || !gerado?.value) {
+      throw new Error(`falha ao gerar o JPEG no browser: ${JSON.stringify(gerado).slice(0, 200)}`);
+    }
+    const { w, h, jpegB64 } = gerado.value;
+
+    const jpeg = Buffer.from(jpegB64, "base64");
+    check("o browser produziu um JPEG", jpeg[0] === 0xff && jpeg[1] === 0xd8,
+      `${jpeg.length} bytes, inicio ${jpeg.subarray(0, 2).toString("hex")}`);
+
+    // Embrulha num .dcm: PEG do dataset + (7FE0,0010) OB com comprimento
+    // indefinido + item da Basic Offset Table + item do frame + delimitador.
+    const dcm = embrulhaDcm(jpeg, { columns: w, rows: h });
+    const destino = join(ROOT, "samples", "jpeg-8bits-gerado.dcm");
+    writeFileSync(destino, dcm);
+
+    await injetarArquivo(destino);
+    let st = null;
+    for (let i = 0; i < 50; i++) {
+      await sleep(400);
+      const { result } = await cdp.send("Runtime.evaluate", {
+        expression: `document.querySelector('[role=status]')?.textContent?.trim() ?? null`,
+        returnByValue: true,
+      });
+      st = result.value;
+      if (st && /64x48|corte|bits|nao|recus/i.test(st)) break;
+    }
+    check("o JPEG de 8 bits foi aceito", !!st && /64x48/.test(st), st ?? "(vazio)");
+
+    const aviso = (await cdp.send("Runtime.evaluate", {
+      expression: `document.querySelector('[data-hu-aproximado]')?.textContent?.trim() ?? null`,
+      returnByValue: true,
+    })).result.value;
+    check("aviso de HU aproximado aparece", !!aviso && /aproximado/i.test(aviso),
+      (aviso ?? "(sem aviso)").slice(0, 50));
+
+    // O valor lido tem de estar perto do que foi codificado. JPEG e com perda,
+    // entao a tolerancia e o que a compressao permite -- e ainda assim muito
+    // mais apertada do que "o numero existe".
+    // O valor lido tem de estar perto do que foi codificado. JPEG e com perda,
+    // entao a tolerancia cobre a perda e nao o bug. Um valor 0 ou 32767
+    // reprovaria.
+    // Posiciona o cursor no meio do "osso" (o centro da imagem).
+    const pos = (await cdp.send("Runtime.evaluate", {
+      expression: `(() => {
+        const el = document.querySelector('[data-viewport="Axial"]');
+        if (!el) return null;
+        const r = el.getBoundingClientRect();
+        return { x: Math.round(r.x + r.width/2), y: Math.round(r.y + r.height/2) };
+      })()`,
+      returnByValue: true,
+    })).result.value;
+    if (!pos) throw new Error("viewport Axial ausente depois de carregar o JPEG");
+    await cdp.send("Input.dispatchMouseEvent", {
+      type: "mouseMoved", x: pos.x, y: pos.y, button: "none",
+    });
+    await sleep(400);
+    const { result: med2 } = await cdp.send("Runtime.evaluate", {
+      expression: `(() => {
+        const el = document.querySelector('[data-hu]');
+        // data-hu e um atributo SEM VALOR: o numero esta no texto. Ler
+        // dataset.hu daria Number("") = 0 e o check passaria com o HU errado.
+        const t = el?.textContent?.trim() ?? '';
+        const n = Number.parseInt(t, 10);
+        return { texto: t, hu: Number.isFinite(n) ? n : null };
+      })()`,
+      returnByValue: true,
+    });
+    const huCentro = med2.value?.hu;
+    check("HU no centro lido", huCentro !== null && huCentro !== undefined,
+      JSON.stringify(med2.value ?? null));
+    // 220 foi codificado no centro; o JPEG com quality 1 e 8-bit, entao a
+    // tolerancia cobre a perda e nao o bug. Um valor 0 ou 32767 reprovaria.
+    check("HU proximo do codificado (220 +- 12)",
+      typeof huCentro === "number" && Math.abs(huCentro - 220) <= 12, `HU=${huCentro}`);
+
+    // Volta para a fixture: o resto do E2E depende dela.
+    await injetarArquivo(SAMPLE);
+    for (let i = 0; i < 40; i++) {
+      await sleep(400);
+      const { result } = await cdp.send("Runtime.evaluate", {
+        expression: `document.querySelector('[role=status]')?.textContent?.trim() ?? null`,
+        returnByValue: true,
+      });
+      if (result.value && /64x64/.test(result.value)) break;
+    }
+    check("o aviso some ao trocar de exame",
+      (await cdp.send("Runtime.evaluate", {
+        expression: `!document.querySelector('[data-hu-aproximado]')`,
+        returnByValue: true,
+      })).result.value === true);
+  }
+
+  /**
+   * Injeta um arquivo no input[type=file] e dispara o onChange do React.
+   * Declarada como `function` e nao `const` de proposito: o bloco de JPEG
+   * acima usa estas duas, e funcao declarada e hoisted.
+   */
+  async function injetarArquivo(caminho) {
+    const { root } = await cdp.send("DOM.getDocument", { depth: -1 });
+    const { nodeId } = await cdp.send("DOM.querySelector", {
+      nodeId: root.nodeId,
+      selector: "input[type=file]",
+    });
+    if (!nodeId) throw new Error("input[type=file] nao encontrado no DOM");
+    await cdp.send("DOM.setFileInputFiles", { nodeId, files: [caminho] });
+    await sleep(300);
+  }
+
+  /**
+   * Embrulha um JPEG cru num .dcm minimo, usando o MESMO writer das fixtures.
+   *
+   * Reimplementar o group 0002 aqui foi o que quebrou: a primeira versao
+   * esqucia o group length e o dicom-parser lancava "missing required meta
+   * header attribute 0002,0010" -- um erro do arquivo de teste, nao do app.
+   */
+  function embrulhaDcm(jpeg, { columns, rows }) {
+    return Buffer.from(buildFile(
+      {
+        sopClassUid: "1.2.840.10008.5.1.4.1.1.7",
+        sopInstanceUid: "1.2.3.4.5.6.7",
+        transferSyntaxUid: "1.2.840.10008.1.2.4.50",
+        implClassUid: "1.2.3.4.5.6.8",
+        implVersion: "ODONTOVISION_TEST",
+      },
+      [
+        el(0x0028, 0x0010, "US", us(rows)),
+        el(0x0028, 0x0011, "US", us(columns)),
+        el(0x0028, 0x0002, "US", us(1)),
+        el(0x0028, 0x0004, "CS", new TextEncoder().encode("MONOCHROME2 ")),
+        el(0x0028, 0x0008, "IS", new TextEncoder().encode("1")),
+        el(0x0028, 0x0100, "US", us(8)),
+        el(0x0028, 0x0101, "US", us(8)),
+        el(0x0028, 0x0103, "US", us(0)),
+        el(0x0028, 0x0030, "DS", new TextEncoder().encode("0.25\\0.25")),
+        encapsulatedPixelData([new Uint8Array(jpeg)]),
+      ],
+    ));
+  }
+
   check("nenhuma excecao na pagina apos a serie", pageErrors.length === 0,
     pageErrors.join(" | ").slice(0, 200));
 

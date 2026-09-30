@@ -1,4 +1,4 @@
-// Parsing de um ou mais arquivos DICOM. Sem DOM e sem Web Worker, para que
+﻿// Parsing de um ou mais arquivos DICOM. Sem DOM e sem Web Worker, para que
 // o mesmo codigo rode no browser (via worker.ts) e no Node (nos verificadores).
 //
 // Envolve o dicom-parser e extrai o pixel data nativo como typed array.
@@ -36,6 +36,7 @@ const TAGS = {
   rescaleSlope: "x00281052",
   rescaleIntercept: "x00281053",
   rescaleType: "x00281054",
+  pixelPaddingValue: "x00280120",
   bitsAllocated: "x00280100",
   bitsStored: "x00280101",
   pixelRepresentation: "x00280103",
@@ -146,6 +147,7 @@ function readMeta(dataSet: ReturnType<typeof dicomParser.parseDicom>): DicomMeta
     rescaleSlope: slope,
     rescaleIntercept: intercept,
     rescaleType: dataSet.string(TAGS.rescaleType) ?? null,
+    pixelPaddingValue: dataSet.uint16(TAGS.pixelPaddingValue) ?? 0,
     bitsAllocated: dataSet.uint16(TAGS.bitsAllocated) ?? 0,
     bitsStored: dataSet.uint16(TAGS.bitsStored) ?? 0,
     pixelRepresentation: dataSet.uint16(TAGS.pixelRepresentation) === 1 ? "signed" : "unsigned",
@@ -257,6 +259,7 @@ export function parseDicom(byteArray: Uint8Array, fileName: string): DicomParseR
     meta,
     volume,
     needsDecompression,
+    pixelData: element ? { dataOffset: element.dataOffset, length: element.length } : null,
     tagCount: Object.keys(dataSet.elements).length,
     warnings: dataSet.warnings,
   };
@@ -368,6 +371,7 @@ function emptyMeta(): DicomMeta {
     rescaleSlope: 1,
     rescaleIntercept: 0,
     rescaleType: null,
+    pixelPaddingValue: 0,
     bitsAllocated: 0,
     bitsStored: 0,
     pixelRepresentation: "unsigned",

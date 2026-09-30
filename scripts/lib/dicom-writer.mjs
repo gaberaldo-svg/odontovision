@@ -95,3 +95,40 @@ export function buildFile(meta, datasetParts) {
   const fm = fileMeta(meta);
   return concat([preamble(), fm, dataset]);
 }
+
+/** Item de fragmento (FFFE,E000) com o payload. */
+export function fragment(payload) {
+  const head = new Uint8Array(8);
+  const dv = new DataView(head.buffer);
+  dv.setUint16(0, 0xfffe, true);
+  dv.setUint16(2, 0xe000, true);
+  dv.setUint32(4, payload.length, true);
+  return concat([head, payload]);
+}
+
+/** Sequence Delimitation Item (FFFE,E0DD). */
+export function sequenceDelimiter() {
+  const b = new Uint8Array(8);
+  const dv = new DataView(b.buffer);
+  dv.setUint16(0, 0xfffe, true);
+  dv.setUint16(2, 0xe0dd, true);
+  dv.setUint32(4, 0, true);
+  return b;
+}
+
+/**
+ * Pixel data encapsulado (OB, comprimento indefinido) com um frame por item.
+ *
+ * O primeiro item e a Basic Offset Table, sempre vazia aqui: quem sabe onde
+ * cada frame comeca e o proprio frame, e o app monta o volume por
+ * `NumberOfFrames`.
+ */
+export function encapsulatedPixelData(frames) {
+  const head = new Uint8Array(12);
+  const dv = new DataView(head.buffer);
+  dv.setUint16(0, 0x7fe0, true);
+  dv.setUint16(2, 0x0010, true);
+  head.set(enc.encode("OB"), 4);
+  dv.setUint32(8, 0xffffffff, true); // comprimento indefinido
+  return concat([head, fragment(new Uint8Array(0)), ...frames.map(fragment), sequenceDelimiter()]);
+}

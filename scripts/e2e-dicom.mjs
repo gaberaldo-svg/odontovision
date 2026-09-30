@@ -1070,7 +1070,7 @@ try {
   const rel = await lerRelatorio();
   check("relatorio renderizado", rel !== null);
   check("relatorio traz o cabecalho do exame",
-    rel?.texto.startsWith("MEDICOES ODONTOVISION\nPaciente: "), JSON.stringify(rel?.texto.slice(0, 30) ?? ""));
+    rel?.texto.startsWith("RELATORIO ODONTOVISION\nPaciente: "), JSON.stringify(rel?.texto.slice(0, 30) ?? ""));
   check("relatorio traz exame e data",
     /Exame: \S+/.test(rel?.texto ?? "") && /Data: \S+/.test(rel?.texto ?? ""));
   check("relatorio traz o voxel", /Voxel: \d+\.\d+ x \d+\.\d+ x \d+\.\d+ mm/.test(rel?.texto ?? ""),
@@ -1090,7 +1090,7 @@ try {
   check("colunas da tabela separadas por espaco",
     linhaDados.every((l) => !/distanciaAxial|anguloCoronal|anguloSagital|mm\d/.test(l)),
     linhaDados.join(" || "));
-  check("relatorio mostra o total", rel?.texto.includes("Total: 3"), rel?.texto ?? "");
+  check("relatorio mostra o total", rel?.texto.includes("Medicoes: 3"), rel?.texto ?? "");
 
   // O CSV nao e um atributo do DOM: o botao monta um Blob. Ler o texto do
   // relatorio e o que da para conferir sem interceptar o download, entao o
@@ -1310,23 +1310,86 @@ try {
   check("as 3 medicoes do bloco de angulo sobreviveram a limpar anotacoes",
     antesDeLimpar.length === 3 && antesDeLimpar.every((m) => m.kind === "angle"),
     `n=${antesDeLimpar.length} kinds=${antesDeLimpar.map((m) => m.kind).join(" ")}`);
-  check("anotacoes nao entram no relatorio de medicoes",
+  check("anotacoes nao entram na lista de medicoes",
     antesDeLimpar.every((m) => m.kind !== "text"),
     antesDeLimpar.map((m) => m.kind).join(" "));
   check("relatorio ainda conta as medicoes",
-    (await lerRelatorio())?.texto.includes(`Total: ${antesDeLimpar.length}`),
-    (await lerRelatorio())?.texto.split("\n").find((l) => l.startsWith("Total:")) ?? "");
+    (await lerRelatorio())?.texto.includes(`Medicoes: ${antesDeLimpar.length}`),
+    (await lerRelatorio())?.texto.split("\n").find((l) => l.startsWith("Medicoes:")) ?? "");
 
   // Esvaziar a lista esvazia o relatorio tambem: as duas coisas andam juntas.
   await realClick("button", "limpar todas");
   const relVazio = await lerRelatorio();
   check("relatorio vazio avisa", relVazio?.texto.includes("Nenhuma medicao registrada."),
     relVazio?.linhas.at(-1) ?? "");
-  check("relatorio vazio conta zero", relVazio?.texto.includes("Total: 0"));
+  check("relatorio vazio conta zero", relVazio?.texto.includes("Medicoes: 0"));
   check("relatorio vazio ainda traz o cabecalho do exame",
-    relVazio?.texto.startsWith("MEDICOES ODONTOVISION\nPaciente: "));
+    relVazio?.texto.startsWith("RELATORIO ODONTOVISION\nPaciente: "));
   check("lista vazia no fim", (await lerMedicoes()).length === 0);
 
+  // --- anotacoes no relatorio ---
+  // O defeito que esta fase corrige: existia anotacao na tela e o arquivo
+  // exportado nao tinha nenhuma. Ver o texto renderizado; o CSV byte a byte e
+  // do unit test, porque o botao monta um Blob que a pagina nao consegue ler.
+  console.log("\n-- relatorio inclui as anotacoes --");
+  await realClick('[aria-label="Anotacao"]');
+  await digitarRotulo("Canal mandibular inferior");
+  await cliqueNoVoxel("Axial", 24, 40);
+  // Aspas no rotulo: e o caso que quebra CSV de verdade, porque fecha a
+  // celula. O unit test prova o dobramento; aqui so que o texto sobrevive
+  // inteiro ate a tela.
+  await digitarRotulo('Sinfise, parte "central"');
+  await cliqueNoVoxel("Coronal", 32, 16);
+
+  // O "limpar todas" do bloco do relatorio ja esvaziou a lista de medicoes,
+  // entao este bloco cria uma regua para ter as duas secoes com conteudo.
+  await realClick('[aria-label="Regua"]');
+  await digitarRotulo("Distancia da regua");
+  await cliqueNoVoxel("Axial", 16, 16);
+  await cliqueNoVoxel("Axial", 34, 16);
+  const medidasAntes = await lerMedicoes();
+  check("uma regua criada para o relatorio", medidasAntes.length === 1,
+    `n=${medidasAntes.length} kind=${medidasAntes[0]?.kind}`);
+
+  const relComNotas = await lerRelatorio();
+  check("relatorio agora conta as anotacoes",
+    relComNotas?.texto.includes("Anotacoes: 2"),
+    relComNotas?.texto.split("\n").find((l) => l.startsWith("Anotacoes:")) ?? "");
+  check("relatorio tem secao ANOTACOES", relComNotas?.texto.includes("ANOTACOES"),
+    (relComNotas?.texto ?? "").slice(-160));
+  check("relatorio traz o texto da anotacao do axial",
+    relComNotas?.texto.includes("Canal mandibular inferior"), "");
+  check("relatorio traz o texto da anotacao do coronal",
+    relComNotas?.texto.includes('Sinfise, parte "central"'), "");
+  check("relatorio traz o ponto da anotacao",
+    relComNotas?.texto.includes("(24,40)"), "");
+  check("anotacao nao aparece na tabela de medicoes",
+    !(relComNotas?.texto ?? "").includes("anotacao    Axial"), "");
+  // Cabecalho de coluna da secao de anotacoes: sem ele, o (u,v) lido solto
+  // parece valor de medida.
+  check("secao de anotacoes tem PONTE e ROTULO",
+    /PONTE\s+ROTULO/.test(relComNotas?.texto ?? ""), "");
+  // E o relatorio continua sendo do exame inteiro, com a regua E as anotacoes.
+  check("relatorio ainda lista a regua",
+    relComNotas?.texto.includes("Medicoes: 1"),
+    relComNotas?.texto.split("\n").find((l) => l.startsWith("Medicoes:")) ?? "");
+  check("relatorio mostra as duas secoes com conteudo",
+    relComNotas?.texto.includes("ANOTACOES") && relComNotas?.texto.includes("90.0") === false,
+    relComNotas?.texto.split("\n").filter((l) => /^(Medicoes|Anotacoes|ANOTACOES|#)/.test(l)).join(" | "));
+
+  // Limpar as anotacoes tira do relatorio tambem: o arquivo tem de refletir o
+  // que esta na tela.
+  await realClick('[aria-label="Janela/Contraste"]');
+  await realClick('[aria-label="Limpar anotacoes"]');
+  const relSemNotas = await lerRelatorio();
+  check("limpar anotacoes limpa a secao do relatorio",
+    relSemNotas?.texto.includes("Anotacoes: 0")
+      && !relSemNotas?.texto.includes("Canal mandibular inferior"),
+    relSemNotas?.texto.split("\n").find((l) => l.startsWith("Anotacoes:")) ?? "");
+  check("secao ANOTACOES some quando nao ha nenhuma",
+    !relSemNotas?.texto.includes("ANOTACOES"), (relSemNotas?.texto ?? "").slice(-120));
+  check("as medidas continuam no relatorio",
+    relSemNotas?.texto.includes("Medicoes: 1"), relSemNotas?.texto.split("\n").find((l) => l.startsWith("Medicoes:")) ?? "");
   check("nenhuma excecao na pagina apos a serie", pageErrors.length === 0,
     pageErrors.join(" | ").slice(0, 200));
 

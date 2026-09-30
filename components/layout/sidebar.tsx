@@ -39,8 +39,8 @@ export function Sidebar() {
   const [copiado, setCopiado] = React.useState(false);
 
   const report = React.useMemo(
-    () => buildReport(measurements, metadata),
-    [measurements, metadata],
+    () => buildReport(measurements, annotations, metadata),
+    [measurements, annotations, metadata],
   );
 
   /** Ponto 3D do crosshair,ja em (u,v) de cada plano. Ver addAnnotationAtCrosshair. */

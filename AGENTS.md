@@ -40,9 +40,12 @@ Isso impõe duas regras em `lib/`:
 - **Fase 5b**: ângulo de três pontos (dois cliques marcam as pontas, o terceiro
   fecha), em graus e com o HU dos três pontos.
 - **Fase 5c**: relatório das medições em texto e CSV, com download e cópia.
-- **Fase 5d** (estamos aqui): anotação de texto, um rótulo livre amarrado a um
-  ponto de um plano/corte, com lista, remoção e limpeza. Anotações **não** entram
-  no relatório de medições: não têm valor calculado para somar.
+- **Fase 5d**: anotação de texto, um rótulo livre amarrado a um ponto de um
+  plano/corte, com lista, remoção e limpeza.
+- **Fase 5e** (estamos aqui): as anotações entram no relatório e no CSV, com o
+  ponto onde o rótulo está. O CSV ganhou colunas `texto`, `u` e `v`; a 5d as
+  deixava de fora, e um clínico que anota "canal mandibular" e exporta ficava
+  sem o rótulo no arquivo.
 
 Só avance de fase com ordem explícita do usuário.
 
@@ -106,9 +109,19 @@ Estas custaram bug real; todas já têm teste.
   CSV byte a byte e o E2E garante o texto renderizado — não há como ler o
   arquivo baixado de dentro da página, e fingir que há seria o teste-mentira.
 - **Anotação não é `kind: "text"` dentro de `Measurement`.** Aquela união é
-  para valores que o app calcula (mm, graus, HU) e que o relatório soma; uma
-  anotação não tem valor nenhum, e enfiá-la lá obrigaria canvas, sidebar e
-  relatório a tratar um caso sem medição. Ficou em `annotations`, separado.
+  para valores que o app calcula (mm, graus, HU); uma anotação não tem valor
+  nenhum, e enfiá-la lá obrigaria canvas, sidebar e relatório a tratar um caso
+  sem medição. Ficou em `annotations`, separado — mas o **relatório** leva as
+  duas coisas, em linhas da mesma tabela do CSV.
+- **Coluna vazia, nunca valor inventado.** Uma anotação tem `valor`, `unidade` e
+  `hu_*` vazios no CSV; uma medida tem `texto`, `u` e `v` vazios. Nenhuma das
+  duas perde informação — a geometria de uma medida está no valor e nas pontas,
+  a de uma anotação no ponto. Um `valor: 0` numa anotação seria mentira.
+- O `tipo` do CSV é o rótulo em português (`distancia`, `angulo`, `anotacao`),
+  não o `kind` interno (`distance`): o arquivo é para humans e planilhas, o
+  `kind` é para o TypeScript. O texto do relatório tem **duas seções** — medidas
+  e anotações — porque quem lê quer ver as coisas separadas, enquanto o CSV é
+  **uma tabela só**, porque quem importa em planilha quer uma.
 - **O texto do campo é rascunho, não resultado.** "limpar" tira a lista e o
   botão, nunca o que o usuário digitou, e ele sobrevive à troca de tool e à
   carga de outro exame. Texto vazio (ou só espaços) **não cria** anotação: uma
@@ -156,7 +169,7 @@ npm run sample           # gera a fixture de 1 corte em samples/
 npm run sample:series    # gera a série de 32 cortes + a variante multiframe
 npm run fetch:real       # baixa DICOMs REAIS de teste em samples/real/ (ver abaixo)
 npm run verify:sample    # valida a fixture de 1 corte (38 checks)
-npm run verify:volume    # valida HU/W-L/MPR/medicao/angulo/relatorio/anotacao puros (179 checks)
+npm run verify:volume    # valida HU/W-L/MPR/medicao/angulo/relatorio/anotacao puros (194 checks)
 npm run verify:series    # monta a série real e confere voxel a voxel (50 checks)
 npm run e2e              # Chrome headless via CDP, porta 3210
 npm run verify           # tsc + build + sample + volume + series + e2e

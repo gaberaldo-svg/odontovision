@@ -519,54 +519,98 @@ const reportMeta = {
 };
 const dist = buildMeasurement(mprVolume, "axial", 1, { u: 0, v: 1 }, { u: 3, v: 5 }, 1).measurement;
 const ang = buildAngleMeasurement(mprVolume, "coronal", 0, { u: 7, v: 3 }, { u: 3, v: 1 }, { u: 1, v: 2 }, 2).measurement;
+const notaA = buildAnnotation(mprVolume, "coronal", 0, 5, 2, "Canal mandibular", 1).annotation;
+const notaB = buildAnnotation(mprVolume, "axial", 1, 2, 4, 'Sinfise, "parte" central', 2).annotation;
 // De proposito fora de ordem: a ordem do relatorio e axial -> coronal ->
 // sagital, e nao a ordem em que o usuario clicou.
-const rel = buildReport([ang, dist], reportMeta);
-check("contagem", rel.contagem === 2, `=${rel.contagem}`);
+const rel = buildReport([ang, dist], [notaB, notaA], reportMeta);
+check("contagem", rel.contagem.medicoes === 2 && rel.contagem.anotacoes === 2,
+  JSON.stringify(rel.contagem));
 
 const linhasCsv = rel.csv.trim().split("\n");
-check("CSV: cabecalho + 2 linhas", linhasCsv.length === 3, `n=${linhasCsv.length}`);
-check("CSV: cabecalho", linhasCsv[0] === '"id","tipo","plano","corte","valor","unidade","hu_a","hu_b","hu_c","delta_hu"',
+check("CSV: cabecalho + 4 linhas", linhasCsv.length === 5, `n=${linhasCsv.length}`);
+check("CSV: cabecalho", linhasCsv[0] === '"id","tipo","plano","corte","valor","unidade","hu_a","hu_b","hu_c","delta_hu","texto","u","v"',
   linhasCsv[0]);
-// Regra distancia: o valor e numero cru (5,62 -> "5.62"), sem "mm" na celula.
-check("CSV: distancia com valor cru e unidade separada",
-  linhasCsv[1] === '"1","distance","axial","1","2.5","mm","110","153","","43"', linhasCsv[1]);
+// Regra distancia: o valor e numero cru (2.50 -> "2.5"), sem "mm" na celula, e
+// texto/u/v vazios -- a geometria dela ja esta no valor e nas pontas.
+check("CSV: distancia com valor cru e texto vazio",
+  linhasCsv[1] === '"1","distancia","axial","1","2.5","mm","110","153","","43","","",""', linhasCsv[1]);
 // Regra angulo: hu_c preenchido e delta vazio, porque o angulo nao tem delta.
 check("CSV: angulo com hu_c e sem delta",
-  linhasCsv[2] === '"2","angle","coronal","0","53.1","deg","307","103","201",""', linhasCsv[2]);
+  linhasCsv[2] === '"2","angulo","coronal","0","53.1","deg","307","103","201","","","",""', linhasCsv[2]);
+// Regra anotacao: valor/unidade/HU vazios, texto e ponto preenchidos. Uma
+// anotacao com valor 0 seria mentira: nao ha valor medido. A ordem e
+// axial -> coronal (a mesma das medicoes), nao a de insercao.
+check("CSV: anotacao do axial so com texto e ponto",
+  linhasCsv[3] === '"2","anotacao","axial","1","","","","","","","Sinfise, ""parte"" central","2","4"',
+  linhasCsv[3]);
+check("CSV: anotacao do coronal", linhasCsv[4] === '"1","anotacao","coronal","0","","","","","","","Canal mandibular","5","2"',
+  linhasCsv[4]);
+// Aspas dentro do texto: dobradas, senao a celula fecharia no meio e as
+// colunas seguintes virariamMeasurements.
+check("CSV: aspas do texto dobradas", rel.csv.includes('""parte""'), rel.csv.split("\n")[3]);
+check("CSV: nenhuma celula quebra a contagem de colunas",
+  linhasCsv.every((l) => (l.match(/"/g) ?? []).length % 2 === 0));
 
 // O relatorio nao esconde o que o usuario mediu: a lista da tela e por corte,
 // o relatorio e do exame inteiro.
-const soDoCorte = buildReport([dist], reportMeta);
-check("relatorio nao filtra por corte visivel", soDoCorte.contagem === 1 && soDoCorte.csv.includes('"1","distance"'),
-  `contagem=${soDoCorte.contagem}`);
+const soDoCorte = buildReport([dist], [], reportMeta);
+check("relatorio nao filtra por corte visivel",
+  soDoCorte.contagem.medicoes === 1 && soDoCorte.csv.includes('"1","distancia"'),
+  JSON.stringify(soDoCorte.contagem));
 
 // A ordenacao tem de ser estavel e independente da ordem de insercao.
-const invertido = buildReport([dist, ang], reportMeta);
+const invertido = buildReport([dist, ang], [notaA, notaB], reportMeta);
 check("ordem independe da ordem de insercao", invertido.csv === rel.csv);
 
 // O texto leva o cabecalho do exame e as duas casas do mm, igual a lista.
-check("texto comeca pelo cabecalho", rel.texto.startsWith("MEDICOES ODONTOVISION\nPaciente: MARIA, JOAO\n"),
+check("texto comeca pelo cabecalho", rel.texto.startsWith("RELATORIO ODONTOVISION\nPaciente: MARIA, JOAO\n"),
   JSON.stringify(rel.texto.slice(0, 40)));
 check("texto traz paciente, exame e data",
   rel.texto.includes("Paciente: MARIA, JOAO") && rel.texto.includes("Exame: CBCT-2024-0142")
     && rel.texto.includes("Data: 2024-03-15"));
 check("texto traz o voxel formatado", rel.texto.includes("Voxel: 0.25 x 0.25 x 1.00 mm"),
   rel.texto.split("\n").find((l) => l.startsWith("Voxel:")) ?? "");
-check("texto mostra o total", rel.texto.includes("Total: 2"));
+check("texto conta medicoes e anotacoes separadas",
+  rel.texto.includes("Medicoes: 2") && rel.texto.includes("Anotacoes: 2"));
 check("texto com o mm da regua", rel.texto.includes("2.50 mm"), rel.texto);
 check("texto com os graus do angulo", rel.texto.includes("53.1\u00B0"), rel.texto);
 check("texto traz o delta da regua", rel.texto.includes("\u0394+43 HU"), rel.texto);
 // O angulo aparece sem delta: tres pontos nao tem par unico.
 check("texto do angulo sem delta", rel.texto.includes("307 -> 103 -> 201 HU"), rel.texto);
 
+// As anotacoes tem secao propria, com o ponto onde o rotulo esta. Sem o
+// ponto, o arquivo exportado nao deixa o clinico reencontrar o rotulo.
+check("texto tem secao de anotacoes", rel.texto.includes("\nANOTACOES\n"), rel.texto.slice(-200));
+check("texto traz o texto da anotacao", rel.texto.includes("Canal mandibular"), rel.texto);
+check("texto traz o ponto da anotacao", rel.texto.includes("(5,2)"), rel.texto);
+check("texto traz aspas do rotulo sem quebrar a linha",
+  rel.texto.includes('Sinfise, "parte" central'), rel.texto);
+const secaoNotas = rel.texto.slice(rel.texto.indexOf("ANOTACOES"));
+check("as anotacoes vem depois das medicoes",
+  rel.texto.indexOf("2.50 mm") < rel.texto.indexOf("ANOTACOES"));
+check("tabela de anotacoes tem cabecalho de coluna",
+  /#\s+PLANO\s+CORTE\s+PONTE\s+ROTULO/.test(secaoNotas), secaoNotas.split("\n")[1] ?? "");
+check("linhas de anotacao nao tem coluna grudada",
+  !/Axial\d|Coronal\d/.test(secaoNotas), secaoNotas.split("\n").slice(2).join(" | "));
+check("medicoes vem antes das anotacoes",
+  rel.texto.indexOf("2.50 mm") < rel.texto.indexOf("ANOTACOES"));
+
 // Relatorio sem medicoes: arquivo bem formado e explicito, em vez de vazio.
-const vazio = buildReport([], reportMeta);
-check("relatorio vazio conta zero", vazio.contagem === 0);
+const vazio = buildReport([], [], reportMeta);
+check("relatorio vazio conta zero",
+  vazio.contagem.medicoes === 0 && vazio.contagem.anotacoes === 0);
 check("relatorio vazio avisa", vazio.texto.includes("Nenhuma medicao registrada."));
 check("CSV vazio e so o cabecalho", vazio.csv.trim().split("\n").length === 1, JSON.stringify(vazio.csv));
-check("sem metadados, tudo vira '-'", buildReport([], null).texto.includes("Paciente: -"),
-  buildReport([], null).texto.split("\n")[1]);
+// So anotacoes: a secao de medicoes some, a de anotacoes fica. Sem as duas
+// secoes vazias, para o relatorio nao fingir que mediu alguma coisa.
+const soNotas = buildReport([], [notaA], reportMeta);
+check("so anotacoes: avisa que nao mediu",
+  soNotas.texto.includes("Nenhuma medicao registrada."), soNotas.texto);
+check("so anotacoes: a secao existe", soNotas.texto.includes("ANOTACOES"));
+check("so anotacoes: uma linha no CSV", soNotas.csv.trim().split("\n").length === 2);
+check("sem metadados, tudo vira '-'", buildReport([], [], null).texto.includes("Paciente: -"),
+  buildReport([], [], null).texto.split("\n")[1]);
 check("texto e CSV terminam com quebra de linha", rel.texto.endsWith("\n") && rel.csv.endsWith("\n"));
 check("nenhuma celula de CSV quebra linha", !rel.csv.split("\n").slice(1).some((l) => l.includes("\r")));
 

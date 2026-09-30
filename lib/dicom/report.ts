@@ -1,4 +1,5 @@
 import type { Measurement } from "./measure.ts";
+import type { Annotation } from "./annotate.ts";
 import { formatDeg, formatDeltaHu, formatMm, formatHu, PLANO_LABEL } from "../format.ts";
 import type { Plane } from "./types.ts";
 
@@ -21,49 +22,74 @@ export interface Report {
   texto: string;
   /** CSV com toda a celula entre aspas, para planilha e para importar. */
   csv: string;
-  contagem: number;
+  /** Quantas medidas e quantas anotacoes entraram. */
+  contagem: { medicoes: number; anotacoes: number };
 }
 
 /** Ordem de apresentacao: axial, coronal, sagital, e dentro deles o corte. */
 const ORDEM_PLANO: Plane[] = ["axial", "coronal", "sagittal"];
 
-/**
- * O relatorio lista TODAS as medicoes, nao so as que estao desenhadas na tela.
- *
- * A lista lateral e por plano e por corte; o relatorio e do exame inteiro. Sao
- * coisas diferentes de proposito: trocar de corte esconde a regua para nao
- * poluir a imagem, mas apagar do relatorio uma medicao que o clinico acabou de
- * fazer seria perder trabalho. O que o medico mediu e o que ele exporta.
- */
-function ordenar(measurements: Measurement[]): Measurement[] {
-  return [...measurements].sort(
+type Local = { plane: Plane; slice: number; id: number };
+
+function ordenar<T extends Local>(itens: T[]): T[] {
+  return [...itens].sort(
     (a, b) =>
       ORDEM_PLANO.indexOf(a.plane) - ORDEM_PLANO.indexOf(b.plane) || a.slice - b.slice || a.id - b.id,
   );
 }
 
-/** Uma linha do relatorio, antes de virar texto ou CSV. */
+/**
+ * Uma linha do relatorio, seja de medida ou de anotacao.
+ *
+ * Os dois tipos dividem a MESMA linha em vez de ter linhas separadas: o CSV
+ * e uma tabela so, e quem importa em planilha ou em script quer uma tabela.
+ * As colunas que nao se aplicam ao tipo ficam vazias, nunca com um valor
+ * inventado -- um `valor` de 0 numa anotacao seria mentira.
+ */
 interface Linha {
   id: number;
-  kind: "distance" | "angle";
+  kind: "distance" | "angle" | "anotacao";
   plane: Plane;
   slice: number;
   /** Valor numerico cru: quem vai consumir o CSV nao quer "5,00 mm" na celula. */
-  valor: number;
-  unidade: "mm" | "deg";
-  /** Como o clinico le: com unidade e casas. */
+  valor: number | null;
+  unidade: "mm" | "deg" | null;
+  /** Como o clinico le: com unidade e casas. Vazio na anotacao. */
   valorFormatado: string;
-  huA: number;
-  huB: number;
+  huA: number | null;
+  huB: number | null;
   huC: number | null;
   deltaHu: number | null;
+  texto: string | null;
+  u: number | null;
+  v: number | null;
 }
 
-function paraLinha(m: Measurement): Linha {
-  const comum = { id: m.id, kind: m.kind, plane: m.plane, slice: m.slice, huA: m.huA, huB: m.huB };
+const ROTULO_TIPO: Record<Linha["kind"], string> = {
+  distance: "distancia",
+  angle: "angulo",
+  anotacao: "anotacao",
+};
+
+function paraMedida(m: Measurement): Linha {
+  const base = {
+    id: m.id, kind: m.kind, plane: m.plane, slice: m.slice, valorFormatado: "",
+    texto: null, u: null, v: null,
+  };
   return m.kind === "angle"
-    ? { ...comum, valor: m.angleDeg, unidade: "deg", valorFormatado: formatDeg(m.angleDeg), huC: m.huC, deltaHu: null }
-    : { ...comum, valor: m.distanceMm, unidade: "mm", valorFormatado: formatMm(m.distanceMm), huC: null, deltaHu: m.deltaHu };
+    ? { ...base, valor: m.angleDeg, unidade: "deg", valorFormatado: formatDeg(m.angleDeg),
+        huA: m.huA, huB: m.huB, huC: m.huC, deltaHu: null }
+    : { ...base, valor: m.distanceMm, unidade: "mm", valorFormatado: formatMm(m.distanceMm),
+        huA: m.huA, huB: m.huB, huC: null, deltaHu: m.deltaHu };
+}
+
+function paraAnotacao(a: Annotation): Linha {
+  return {
+    id: a.id, kind: "anotacao", plane: a.plane, slice: a.slice,
+    valor: null, unidade: null, valorFormatado: "",
+    huA: null, huB: null, huC: null, deltaHu: null,
+    texto: a.text, u: a.u, v: a.v,
+  };
 }
 
 /**
@@ -86,23 +112,22 @@ function celula(valor: string | number | null): string {
 
 function linhaCsv(l: Linha): string {
   return [
-    l.id,
-    l.kind,
-    l.plane,
-    l.slice,
-    l.valor,
-    l.unidade,
-    l.huA,
-    l.huB,
-    l.huC,
-    l.deltaHu,
+    l.id, ROTULO_TIPO[l.kind], l.plane, l.slice, l.valor, l.unidade,
+    l.huA, l.huB, l.huC, l.deltaHu, l.texto, l.u, l.v,
   ]
     .map(celula)
     .join(",");
 }
 
+/**
+ * `u` e `v` so existem para anotacao, e `valor`/`hu_*` so para medidas. Nenhuma
+ * linha perde informacao por isso: a geometria de uma medida esta no valor e
+ * nas pontas, e a de uma anotacao esta no ponto. Uma coluna vazia e melhor
+ * que uma coluna com o valor da outra coisa.
+ */
 const CABECALHO_CSV = [
-  "id", "tipo", "plano", "corte", "valor", "unidade", "hu_a", "hu_b", "hu_c", "delta_hu",
+  "id", "tipo", "plano", "corte", "valor", "unidade",
+  "hu_a", "hu_b", "hu_c", "delta_hu", "texto", "u", "v",
 ];
 
 /**
@@ -113,67 +138,98 @@ const CABECALHO_CSV = [
  * vira "distanciaAxial 1" -- ilegivel, e sem nenhum sinal de erro.
  */
 function coluna(texto: string, largura: number): string {
-  return colunaBruta(texto, largura) + " ";
-}
-
-function colunaBruta(texto: string, largura: number): string {
-  return texto + " ".repeat(Math.max(0, largura - texto.length));
+  return texto + " ".repeat(Math.max(0, largura - texto.length)) + " ";
 }
 
 /**
- * Monta o relatorio em texto e CSV a partir das medicoes confirmadas.
+ * Monta o relatorio em texto e CSV a partir das medidas e anotacoes.
  *
- * Nao le o volume: os numeros ja vem prontos na medicao (mm e graus). Se o
- * relatorio precisasse do volume, ele teria de lembrar de qual corte cada
- * medicao veio -- e essa e exatamente a informacao que o `slice` ja carrega.
+ * Nao le o volume: os numeros ja vem prontos na medicao (mm e graus) e o
+ * ponto ja vem na anotacao. Se o relatorio precisasse do volume, ele teria de
+ * lembrar de qual corte cada registro veio -- e essa e exatamente a
+ * informacao que `slice` ja carrega.
+ *
+ * Medidas e anotacoes aparecem no relatorio INTEIRO, nao so as do corte na
+ * tela: trocar de corte esconde a regua para nao poluir a imagem, mas apagar
+ * do arquivo uma medicao que o clinico acabou de fazer seria perder trabalho.
  */
-export function buildReport(measurements: Measurement[], meta: ReportMeta | null): Report {
-  const linhas = ordenar(measurements).map(paraLinha);
+export function buildReport(
+  measurements: Measurement[],
+  annotations: Annotation[],
+  meta: ReportMeta | null,
+): Report {
+  const linhas = [
+    ...ordenar(measurements).map(paraMedida),
+    ...ordenar(annotations).map(paraAnotacao),
+  ];
+  const medidas = linhas.filter((l) => l.kind !== "anotacao");
+  const anotacoes = linhas.filter((l) => l.kind === "anotacao");
+
   const voxel = meta ? meta.voxelSize.map((v) => v.toFixed(2)).join(" x ") + " mm" : "-";
 
-  const cabecalho = [
-    "MEDICOES ODONTOVISION",
+  const texto: string[] = [
+    "RELATORIO ODONTOVISION",
     `Paciente: ${meta?.patientName ?? "-"}`,
     `Exame: ${meta?.patientId ?? "-"}`,
     `Data: ${meta?.studyDate ?? "-"}`,
     `Serie: ${meta?.seriesDescription ?? "-"}`,
     `Modalidade: ${meta?.modality ?? "-"}`,
     `Voxel: ${voxel}`,
-    `Total: ${linhas.length}`,
+    `Medicoes: ${medidas.length}`,
+    `Anotacoes: ${anotacoes.length}`,
+    "",
   ];
 
-  const texto: string[] = [...cabecalho, ""];
   const csv: string[] = [CABECALHO_CSV.map(celula).join(",")];
 
-  if (linhas.length === 0) {
+  if (medidas.length === 0) {
     texto.push("Nenhuma medicao registrada.");
   } else {
     // Larguras pelo conteudo, nao fixas: um id de tres digitos ou um "151.9"
     // desalinharia a coluna e o relatorio pareceria quebrado.
-    const tipo = (l: Linha) => (l.kind === "angle" ? "angulo" : "distancia");
     const dens = (l: Linha) =>
       l.kind === "angle"
         ? `${l.huA} -> ${l.huB} -> ${l.huC} HU`
         : `${l.huA} -> ${l.huB} HU   Δ${formatDeltaHu(l.deltaHu ?? 0)}`;
 
     const larguras = {
-      id: Math.max("#".length, ...linhas.map((l) => String(l.id).length)),
-      tipo: Math.max("TIPO".length, ...linhas.map((l) => tipo(l).length)),
-      plano: Math.max("PLANO".length, ...linhas.map((l) => PLANO_LABEL[l.plane].length)),
-      corte: Math.max("CORTE".length, ...linhas.map((l) => String(l.slice).length)),
-      valor: Math.max("RESULTADO".length, ...linhas.map((l) => l.valorFormatado.length)),
+      id: Math.max(1, ...medidas.map((l) => String(l.id).length)),
+      tipo: Math.max(4, ...medidas.map((l) => ROTULO_TIPO[l.kind].length)),
+      plano: Math.max(5, ...medidas.map((l) => PLANO_LABEL[l.plane].length)),
+      corte: Math.max(5, ...medidas.map((l) => String(l.slice).length)),
+      valor: Math.max(9, ...medidas.map((l) => l.valorFormatado.length)),
     };
 
     const linha = (a: string, b: string, c: string, d: string, e: string, f: string) =>
       `${coluna(a, larguras.id)}${coluna(b, larguras.tipo)}${coluna(c, larguras.plano)}` +
       `${coluna(d, larguras.corte)}${coluna(e, larguras.valor)}${f}`.trimEnd();
 
-    texto.push(
-      linha("#", "TIPO", "PLANO", "CORTE", "RESULTADO", "DENSIDADE (HU)"),
-    );
-    for (const l of linhas) {
+    texto.push(linha("#", "TIPO", "PLANO", "CORTE", "RESULTADO", "DENSIDADE (HU)"));
+    for (const l of medidas) {
       texto.push(
-        linha(String(l.id), tipo(l), PLANO_LABEL[l.plane], String(l.slice), l.valorFormatado, dens(l)),
+        linha(String(l.id), ROTULO_TIPO[l.kind], PLANO_LABEL[l.plane], String(l.slice), l.valorFormatado, dens(l)),
+      );
+    }
+  }
+
+  if (anotacoes.length > 0) {
+    texto.push("", "ANOTACOES");
+    // O ponto entra em (u,v): e ele que diz ONDE o rotulo esta, e sem ele o
+    // arquivo exportado nao deixa o clinico reencontrar a anotacao.
+    const larguras = {
+      id: Math.max(1, ...anotacoes.map((l) => String(l.id).length)),
+      plano: Math.max(5, ...anotacoes.map((l) => PLANO_LABEL[l.plane].length)),
+      corte: Math.max(5, ...anotacoes.map((l) => String(l.slice).length)),
+      ponto: Math.max(9, ...anotacoes.map((l) => `(${l.u},${l.v})`.length)),
+    };
+    const linha = (a: string, b: string, c: string, d: string, e: string) =>
+      `${coluna(a, larguras.id)}${coluna(b, larguras.plano)}${coluna(c, larguras.corte)}` +
+      `${coluna(d, larguras.ponto)}${e}`.trimEnd();
+
+    texto.push(linha("#", "PLANO", "CORTE", "PONTE", "ROTULO"));
+    for (const l of anotacoes) {
+      texto.push(
+        linha(String(l.id), PLANO_LABEL[l.plane], String(l.slice), `(${l.u},${l.v})`, l.texto ?? ""),
       );
     }
   }
@@ -182,5 +238,9 @@ export function buildReport(measurements: Measurement[], meta: ReportMeta | null
 
   // \n e nao \r\n: o E2E compara a string, e um CR invisivel no fim de cada
   // linha faria o arquivo parecer igual no editor e diferente no teste.
-  return { texto: `${texto.join("\n")}\n`, csv: `${csv.join("\n")}\n`, contagem: linhas.length };
+  return {
+    texto: `${texto.join("\n")}\n`,
+    csv: `${csv.join("\n")}\n`,
+    contagem: { medicoes: medidas.length, anotacoes: anotacoes.length },
+  };
 }

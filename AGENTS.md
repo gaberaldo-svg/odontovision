@@ -109,6 +109,20 @@ Estas custaram bug real; todas já têm teste.
   coordenada de voxel em pixel pelo centro do voxel (`u + 0.5`).
 - **Plano ortogonal só existe com `slices >= 2`.** Um `.dcm` de 1 frame não tem
   eixo Z; a UI explica em vez de mostrar imagem vazia.
+- **O pixel data big endian existe e é uma única sintaxe.** `1.2.840.10008.1.2.2`
+  (Explicit VR Big Endian) é a única com bytes big endian; Implicit VR é sempre
+  little endian. Ler ao contrário **não dá erro nenhum** — o HU sai plausível e
+  errado, que é a classe de bug mais perigosa deste projeto. Achado com um
+  arquivo real (`MR_small_bigendian.dcm`): 905 virava −30461, porque `0x0389`
+  lido ao contrário é `0x8903`. O `verify:sample` fabrica o gêmeo big endian da
+  própria fixture e compara **voxel a voxel**, justamente porque um check de
+  "o valor não é NaN" passaria com os bytes trocados.
+- **O que a biblioteca não sabe ler não pode vazar o nome dela.** O
+  dicom-parser lança `TypeError: i.copy is not a function` para Deflate, e o
+  `parseDicom` traduz para uma mensagem que nomeia o arquivo e sugere
+  corrompido/comprimido, deixando o detalhe no fim para quem for reportar.
+- **Nem todo `.dcm` é imagem.** Um objeto SEG de 1 bit (exemplo real:
+  `liver_1frame.dcm`) recusa com `BitsAllocated 1`, e isso está certo.
 - `Sagital` é o nome da viewport; `"sagittal"` é o valor interno de `Plane`.
 
 ## Comandos
@@ -118,7 +132,8 @@ npm run dev              # servidor de desenvolvimento
 npm run build            # build de produção
 npm run sample           # gera a fixture de 1 corte em samples/
 npm run sample:series    # gera a série de 32 cortes + a variante multiframe
-npm run verify:sample    # valida a fixture de 1 corte (27 checks)
+npm run fetch:real       # baixa DICOMs REAIS de teste em samples/real/ (ver abaixo)
+npm run verify:sample    # valida a fixture de 1 corte (38 checks)
 npm run verify:volume    # valida HU/W-L/MPR/medicao/angulo/relatorio puros (155 checks)
 npm run verify:series    # monta a série real e confere voxel a voxel (50 checks)
 npm run e2e              # Chrome headless via CDP, porta 3210
@@ -130,11 +145,27 @@ default (800x600) fica abaixo do breakpoint `lg`, onde a sidebar — e o
 `[data-hu]` — ficam ocultos. As fixtures em `samples/` são gitignored e
 regeneráveis.
 
+## Arquivos DICOM reais
+
+`npm run fetch:real` baixa sete `.dcm` reais em `samples/real/`, vindos de
+`pydicom/data/test_files` — arquivos de teste de terceiros, sintéticos ou
+publicamente desidentificados, **nunca exames de paciente**. O `README.md`
+gerado junto lista, para cada arquivo, o que ele comprova.
+
+São eles que cobrem o que as fixtures synthéticas não alcançam: anatomia de
+verdade, Explicit VR Big Endian, Deflate, JPEG 2000 e um objeto SEG (que não
+vira volume). Dois bugs só apareceram com eles — o big endian lido ao
+contra e a mensagem minificada da biblioteca. Nada de `verify` depende do
+download: o `verify:sample` **fabrica** o gêmeo big endian da própria fixture,
+então a cobertura roda em qualquer máquina, offline.
+
 ## Ignorar sempre
 
 `node_modules/`, `.next/`, `dist/`, e qualquer `*.dcm` / `*.zip`.
-Exames de teste vão em `samples/` e NUNCA devem ser lidos pelo agente —
-ele só recebe contagem de arquivos, nunca o conteúdo binário.
+Arquivos de teste vão em `samples/` e NUNCA devem ser lidos pelo agente — ele só
+recebe contagem de arquivos e metadados do header, nunca o conteúdo binário.
+`samples/real/` é a exceção conhecida: são fixtures públicas sem paciente, e o
+agente pode ler header e HU para validar o parser.
 
 <!-- BEGIN:nextjs-agent-rules -->
 

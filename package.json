@@ -8,6 +8,7 @@
                     "start":  "next start",
                     "sample":  "node scripts/make-sample-dcm.mjs",
                     "sample:series":  "node scripts/make-sample-series.mjs",
+                    "fetch:real":  "node scripts/fetch-real-samples.mjs",
                     "verify:sample":  "node scripts/verify-sample.mjs",
                     "verify:volume":  "node --experimental-strip-types scripts/verify-volume.mjs",
                     "verify:series":  "node --experimental-strip-types scripts/verify-series.mjs",

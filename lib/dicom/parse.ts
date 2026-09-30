@@ -55,6 +55,16 @@ const COMPRESSED_SYNTAXES = new Set([
   "1.2.840.10008.1.2.5", // RLE Lossless
 ]);
 
+/**
+ * A unica sintaxe de transferencia cujo pixel data e big endian. Implicit VR e
+ * sempre little endian, e as comprimidas nunca chegam a extracao nativa.
+ */
+const BIG_ENDIAN_TS = "1.2.840.10008.1.2.2";
+
+function isBigEndian(transferSyntax: string | null): boolean {
+  return transferSyntax === BIG_ENDIAN_TS;
+}
+
 /** "0.25\0.25" -> [0.25, 0.25] */
 function splitNumeric(value: string | undefined | null): number[] | null {
   if (!value) return null;
@@ -69,6 +79,13 @@ function splitNumeric(value: string | undefined | null): number[] | null {
  * Copia o pixel data nativo para um Int16/Uint16Array.
  * So nao comprimido: para dados encapsulados, dicom-parser expoe
  * dataSet.pixelData.frames e o conteudo ainda precisa ser descomprimido.
+ *
+ * `littleEndian` vem da sintaxe de transferencia, e nao e um detalhe: ler
+ * big endian como little endian troca os bytes de cada voxel e devolve um
+ * volume **sem nenhum erro**. O HU sai plausible e errado -- o pior tipo de
+ * bug, porque a tela parece estar certa. `MR_small.dcm` e
+ * `MR_small_bigendian.dcm` sao a mesma imagem: 905 vira -30461, porque 0x0389
+ * lido ao contrario e 0x8903.
  */
 function extractNativeValues(
   byteArray: Uint8Array,
@@ -76,11 +93,12 @@ function extractNativeValues(
   dataLength: number,
   count: number,
   signed: boolean,
+  littleEndian: boolean,
 ): Int16Array | Uint16Array {
   const source = new DataView(byteArray.buffer, byteArray.byteOffset + dataOffset, dataLength);
   const values = signed ? new Int16Array(count) : new Uint16Array(count);
   for (let i = 0; i < count; i++) {
-    const v = source.getInt16(i * 2, true); // little endian
+    const v = source.getInt16(i * 2, littleEndian);
     if (signed) (values as Int16Array)[i] = v;
     else (values as Uint16Array)[i] = v & 0xffff;
   }
@@ -135,7 +153,27 @@ function volumeBlocker(meta: DicomMeta, needsDecompression: boolean, hasPixelDat
 }
 
 export function parseDicom(byteArray: Uint8Array, fileName: string): DicomParseResult {
-  const dataSet = dicomParser.parseDicom(byteArray);
+  // dicom-parser e a biblioteca, nao a nossa: ela lanca `TypeError: i.copy is
+  // not a function` para sintaxes que nao conhece (Deflate, por exemplo), e o
+  // nome minificado chega inteiro na tela do usuario. Traduzir aqui e o unico
+  // lugar onde ainda sabemos qual arquivo era.
+  //
+  // O detalhe original vai no fim, entre parenteses, para quem for reportar o
+  // problema ter o que colar. Nao vai no comeco porque e um nome interno de
+  // biblioteca e nao ajuda ninguem a decidir o que fazer.
+  let dataSet: ReturnType<typeof dicomParser.parseDicom>;
+  try {
+    dataSet = dicomParser.parseDicom(byteArray);
+  } catch (error) {
+    const detalhe = (error as { exception?: string; message?: string })?.exception
+      ?? (error as { message?: string })?.message
+      ?? "sem detalhe";
+    throw new Error(
+      `Nao consegui ler "${fileName}" como DICOM: pode estar corrompido ou usar uma ` +
+        `compressao que o navegador nao decodifica. Detalhe da biblioteca: ${detalhe}`,
+    );
+  }
+
   const meta = readMeta(dataSet);
   const needsDecompression = meta.transferSyntax
     ? COMPRESSED_SYNTAXES.has(meta.transferSyntax)
@@ -150,7 +188,14 @@ export function parseDicom(byteArray: Uint8Array, fileName: string): DicomParseR
     const count = Math.min(expected, Math.floor(element.length / 2));
     const signed = meta.pixelRepresentation === "signed";
     volume = {
-      values: extractNativeValues(byteArray, element.dataOffset, count * 2, count, signed),
+      values: extractNativeValues(
+        byteArray,
+        element.dataOffset,
+        count * 2,
+        count,
+        signed,
+        !isBigEndian(meta.transferSyntax),
+      ),
       rows: meta.rows,
       columns: meta.columns,
       slices: meta.numberOfFrames,

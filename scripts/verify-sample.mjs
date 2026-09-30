@@ -97,5 +97,96 @@ check("HU casca", huAt(32, 40), 900, 8);
 check("HU tecido mole", huAt(32, 50), 120, 8);
 check("HU ar", huAt(2, 2), -900, 8);
 
+// --- gêmeo big endian ---
+// Este caso nasceu de um arquivo real (MR_small_bigendian.dcm, do pydicom):
+// o Explicit VR Big Endian é a ÚNICA sintaxe de transferência cujo pixel data
+// não é little endian, e ler os bytes ao contrário devolve um volume sem
+// nenhum erro — o HU sai plausível e errado, que é o pior tipo de bug porque
+// a tela parece estar certa.
+//
+// O teste não depende do arquivo real: ele Fabrica o gêmeo big endian da
+// própria fixture, trocando a sintaxe e invertendo cada pixel. Se a inversão
+// voltar, os valores deste teste voltam a bater e o bug some.
+console.log("\n-- gêmeo big endian da própria fixture --");
+const { parseDicom } = await import("../lib/dicom/parse.ts");
+const { huAt: huAtLib } = await import("../lib/dicom/volume.ts");
+const LE_UID = "1.2.840.10008.1.2.1";
+const BE_UID = "1.2.840.10008.1.2.2";
+if (LE_UID.length !== BE_UID.length) {
+  // Sem isso a troca de UID mudaria o tamanho do arquivo e o elemento de pixel
+  // data ficaria deslocado -- o teste estaria medindo outra coisa.
+  console.log("  FAIL  UIDs de tamanhos diferentes: a troca no lugar nao cabe");
+  fail++;
+} else {
+  const be = new Uint8Array(byteArray); // copia
+  const uidLe = new TextEncoder().encode(LE_UID);
+  const uidBe = new TextEncoder().encode(BE_UID);
+  let trocouUid = false;
+  for (let i = 0; i + uidLe.length <= be.length; i++) {
+    let igual = true;
+    for (let k = 0; k < uidLe.length; k++) if (be[i + k] !== uidLe[k]) { igual = false; break; }
+    if (!igual) continue;
+    be.set(uidBe, i);
+    trocouUid = true;
+    break;
+  }
+  check("sintaxe trocada no lugar", trocouUid, true);
+
+  // Inverte cada par de bytes do pixel data.
+  const beEl = dicomParser.parseDicom(be).elements.x7fe00010;
+  for (let o = beEl.dataOffset; o + 1 < beEl.dataOffset + beEl.length; o += 2) {
+    const tmp = be[o];
+    be[o] = be[o + 1];
+    be[o + 1] = tmp;
+  }
+
+  const rLe = parseDicom(new Uint8Array(byteArray), "phantom-64.dcm");
+  const rBe = parseDicom(be, "phantom-64-be.dcm");
+
+  check("gêmeo big endian também vira volume", !!rBe.volume, true);
+  check("gêmeo big endian não precisa descomprimir", rBe.needsDecompression, false);
+  check("mesma matriz",
+    `${rBe.volume?.columns}x${rBe.volume?.rows}`,
+    `${rLe.volume?.columns}x${rLe.volume?.rows}`);
+  // A comparação que importa: os DOIS volumes têm de ser idênticos. Um teste
+  // de "o valor não é NaN" passaria com os bytes trocados — e é por isso que
+  // este check compara os números, e não a sanidade deles.
+  check("primeiros valores idênticos",
+    Array.from(rBe.volume?.values.slice(0, 4) ?? []).join(" "),
+    Array.from(rLe.volume?.values.slice(0, 4) ?? []).join(" "));
+  check("volume inteiro idêntico, voxel a voxel",
+    rBe.volume?.values.every((v, i) => v === rLe.volume?.values[i]), true);
+
+  // E o HU, pela mesma conta que a tela usa.
+  check("HU idêntico no centro",
+    huAtLib(rBe.volume, 32, 32, 0), huAtLib(rLe.volume, 32, 32, 0), 0.001);
+}
+
+console.log("\n-- arquivo que a biblioteca não sabe ler --");
+// dicom-parser lança `TypeError: i.copy is not a function` para sintaxes que
+// ele não conhece (Deflate). O nome minificado não pode chegar na tela: o
+// usuário precisa saber que o problema é o arquivo, não o programa.
+const lixo = new Uint8Array(256);
+try {
+  parseDicom(quaseDicom(lixo), "quebrado.dcm");
+  console.log("  FAIL  deveria ter lançado");
+  fail++;
+} catch (e) {
+  const msg = String(e.message ?? e);
+  check("lança com o nome do arquivo", msg.includes("quebrado.dcm"), true);
+  // O detalhe original vem no fim, entre parenteses: uteis para quem vai
+  // reportar o problema, desde que a mensagem nao comece por ele.
+  check("mensagem sem nome minificado de biblioteca",
+    !/i\.copy|is not a function|undefined/.test(msg), true);
+  check("diz que pode ser compressao", /compress|corrompido/i.test(msg), true);
+  check("detalhe original preservado no fim", /Detalhe da biblioteca: \S/.test(msg), true);
+}
+
+/** 132 bytes de preamble+"DICM" e um arquivo que nao tem elemento nenhum. */
+function quaseDicom(bytes) {
+  bytes.set(new TextEncoder().encode("DICM"), 128);
+  return bytes;
+}
+
 console.log(`\n${pass} passaram, ${fail} falharam`);
 process.exit(fail === 0 ? 0 : 1);

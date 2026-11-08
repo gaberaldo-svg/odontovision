@@ -3,8 +3,8 @@
     "version":  "0.1.0",
     "private":  true,
     "scripts":  {
-                    "dev":  "next dev",
-                    "build":  "next build",
+                    "dev":  "next dev --webpack",
+                    "build": "next build --webpack",
                     "start":  "next start",
                     "sample":  "node scripts/make-sample-dcm.mjs",
                     "sample:series":  "node scripts/make-sample-series.mjs",
@@ -12,7 +12,7 @@
                     "verify:sample":  "node scripts/verify-sample.mjs",
                     "verify:volume":  "node --experimental-strip-types scripts/verify-volume.mjs",
                     "verify:series":  "node --experimental-strip-types scripts/verify-series.mjs",
-                    "verify":  "tsc --noEmit && next build && npm run sample && npm run sample:series && npm run verify:sample && npm run verify:volume && npm run verify:series && npm run e2e",
+                    "verify":  "tsc --noEmit && npm run build && npm run sample && npm run sample:series && npm run verify:sample && npm run verify:volume && npm run verify:series && npm run e2e",
                     "e2e":  "node scripts/e2e-dicom.mjs"
                 },
     "dependencies":  {

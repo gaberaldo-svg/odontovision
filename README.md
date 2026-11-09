@@ -163,3 +163,16 @@ Projeto de portfólio. Nenhum dado real de paciente está no repositório: as
 fixtures em `samples/` são sintéticas e regeneráveis, e os arquivos de teste de
 terceiros vêm de `pydicom/data/test_files` (`npm run fetch:real`), que são
 sintéticos ou publicamente desidentificados.
+
+## Desenvolvimento do OdontoVision
+
+Consulte [o PRD](docs/PRD.md), [o roadmap](docs/ROADMAP.md),
+[a arquitetura](docs/ARQUITETURA.md), [o manual multiagente](docs/ORQUESTRACAO.md)
+e [a validacao clinica](docs/VALIDACAO-CLINICA.md).
+
+Para executar no Windows, use `INICIAR-ODONTOVISION.cmd` ou siga
+[as instrucoes de execucao](docs/EXECUCAO-LOCAL.md). Consulte tambem
+[o registro da verificacao](docs/REGISTRO-QA-2026-11-08.md).
+
+O aplicativo e um prototipo para exploracao visual e desenvolvimento. Seu uso
+diagnostico depende de validacao tecnica e clinica adicional.

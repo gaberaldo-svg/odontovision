@@ -174,6 +174,23 @@ try {
   await cdp.send("Page.enable");
   await cdp.send("DOM.enable");
 
+  // Registra a criacao real dos workers antes do carregamento da aplicacao.
+  // O nome dos chunks muda entre Turbopack e Webpack, portanto nao serve
+  // como identificador estavel em um teste de integracao.
+  await cdp.send("Page.addScriptToEvaluateOnNewDocument", {
+    source: `(() => {
+      const NativeWorker = globalThis.Worker;
+      globalThis.__odontovisionWorkerUrls = [];
+      globalThis.Worker = new Proxy(NativeWorker, {
+        construct(target, args, newTarget) {
+          const instance = Reflect.construct(target, args, newTarget);
+          globalThis.__odontovisionWorkerUrls.push(String(args[0]));
+          return instance;
+        },
+      });
+    })()`,
+  });
+
   // Headless abre em 800x600, abaixo do breakpoint `lg` (1024px) onde a sidebar
   // fica visivel. Sem isso, [data-hu] nunca existe e o teste de HU falha.
   const VIEW_W = 1600;
@@ -262,17 +279,18 @@ try {
     expression: `(() => {
       const all = performance.getEntriesByType('resource').map(r => r.name);
       return {
+        constructedWorkers: globalThis.__odontovisionWorkerUrls ?? [],
         workerChunks: all.filter(n => /lib_dicom_worker_ts/.test(decodeURIComponent(n))),
         todosChunks: all.filter(n => /_next\\/static\\/chunks/.test(n)).length,
       };
     })()`,
     returnByValue: true,
   });
-  const wire = wireRemote.value ?? { workerChunks: [] };
+  const wire = wireRemote.value ?? { workerChunks: [], constructedWorkers: [] };
   check(
-    "worker (chunk dicom) baixado pelo browser",
-    wire.workerChunks.length > 0,
-    `${wire.workerChunks.length} chunk(s), ${wire.todosChunks} chunks no total`,
+    "worker DICOM criado pelo browser",
+    wire.constructedWorkers.length > 0,
+    `${wire.constructedWorkers.length} worker(s), ${wire.todosChunks} chunks no total`,
   );
 
   // --- Fase 3: o canvas mostra a imagem real? ---
